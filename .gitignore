@@ -30,3 +30,9 @@ tarpaulin-report.html
 
 # Claude Code
 .entire/
+
+# Entire CLI injected hooks (chained to our originals)
+.githooks/commit-msg
+.githooks/post-commit
+.githooks/prepare-commit-msg
+.githooks/pre-push.pre-entire
