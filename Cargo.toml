@@ -1,0 +1,96 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/autonomic-core",
+    "crates/autonomic-controller",
+    "crates/autonomic-lago",
+    "crates/autonomic-api",
+    "crates/autonomicd",
+]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Restriction lints (cherry-picked, never enable the whole group)
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Correctness & performance
+needless_pass_by_value = "warn"
+cloned_instead_of_copied = "warn"
+redundant_clone = "warn"
+redundant_closure_for_method_calls = "warn"
+unnested_or_patterns = "warn"
+trivially_copy_pass_by_ref = "warn"
+implicit_clone = "warn"
+manual_let_else = "warn"
+needless_collect = "warn"
+large_enum_variant = "warn"
+
+# Style
+doc_markdown = "warn"
+semicolon_if_nothing_returned = "warn"
+match_wildcard_for_single_variants = "warn"
+
+[profile.dev]
+opt-level = 0
+debug = true
+split-debuginfo = "unpacked"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Broomva Tech <contact@broomva.tech>"]
+repository = "https://github.com/broomva/autonomic"
+homepage = "https://github.com/broomva/autonomic"
+keywords = ["agent", "homeostasis", "controller", "ai", "regulation"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+# Core
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# HTTP
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+toml = "0.9"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Agent OS protocol (canonical contract)
+aios-protocol = { version = "0.1.0", path = "../aiOS/crates/aios-protocol" }
+
+# Lago persistence layer
+lago-core = { version = "0.2.1", path = "../lago/crates/lago-core" }
+lago-journal = { version = "0.2.1", path = "../lago/crates/lago-journal" }
+
+# Internal crates
+autonomic-core = { version = "0.1.0", path = "crates/autonomic-core" }
+autonomic-controller = { version = "0.1.0", path = "crates/autonomic-controller" }
+autonomic-lago = { version = "0.1.0", path = "crates/autonomic-lago" }
+autonomic-api = { version = "0.1.0", path = "crates/autonomic-api" }

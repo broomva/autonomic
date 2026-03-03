@@ -1,0 +1,16 @@
+.PHONY: smoke test lint typecheck ci
+
+smoke:
+	@bash scripts/harness/smoke.sh
+
+test:
+	@bash scripts/harness/test.sh
+
+lint:
+	@bash scripts/harness/lint.sh
+
+typecheck:
+	@bash scripts/harness/typecheck.sh
+
+ci: lint typecheck test
+	@echo "[harness:ci] All harness checks passed."

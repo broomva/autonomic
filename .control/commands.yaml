@@ -1,0 +1,22 @@
+version: 1
+commands:
+  - id: smoke
+    command: make smoke
+    preconditions:
+      - dependencies_installed
+    on_failure: fix_environment
+  - id: check
+    command: make check
+    preconditions:
+      - smoke_passed
+    on_failure: fix_static_issues
+  - id: test
+    command: make test
+    preconditions:
+      - check_passed
+    on_failure: diagnose_and_retry
+  - id: recover
+    command: make recover
+    preconditions:
+      - failure_detected
+    on_failure: escalate_human

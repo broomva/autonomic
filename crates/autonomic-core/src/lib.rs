@@ -1,0 +1,24 @@
+//! Core types, traits, and errors for the Autonomic homeostasis controller.
+//!
+//! This crate defines the three-pillar homeostatic state model (operational,
+//! cognitive, economic), gating profiles, hysteresis primitives, rule traits,
+//! and event constructors. It has zero I/O dependencies.
+
+pub mod economic;
+pub mod error;
+pub mod events;
+pub mod gating;
+pub mod hysteresis;
+pub mod identity;
+pub mod rules;
+
+// Re-exports for convenience
+pub use economic::{CostReason, EconomicMode, EconomicState, ModelCostRates, ModelTier};
+pub use error::{AutonomicError, AutonomicResult};
+pub use events::AutonomicEvent;
+pub use gating::{
+    AutonomicGatingProfile, CognitiveState, EconomicGates, HomeostaticState, OperationalState,
+};
+pub use hysteresis::HysteresisGate;
+pub use identity::EconomicIdentity;
+pub use rules::{GatingDecision, HomeostaticRule, RuleSet};

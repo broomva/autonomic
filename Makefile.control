@@ -1,0 +1,19 @@
+.PHONY: smoke check test recover audit install-hooks
+
+smoke:
+	@bash scripts/control/smoke.sh
+
+check:
+	@bash scripts/control/check.sh
+
+test:
+	@bash scripts/control/test.sh
+
+recover:
+	@bash scripts/control/recover.sh
+
+audit: smoke check test
+	@echo "[audit] All control gates passed."
+
+install-hooks:
+	@bash scripts/control/install_hooks.sh
