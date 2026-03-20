@@ -1,14 +1,14 @@
 //! HTTP router for the Autonomic API.
 //!
 //! Endpoints:
-//! - `GET /health` — health check
-//! - `GET /gating/{session_id}` — evaluate rules and return gating profile
-//! - `GET /projection/{session_id}` — return raw homeostatic state
+//! - `GET /health` — health check (unprotected)
+//! - `GET /gating/{session_id}` — evaluate rules and return gating profile (auth-protected)
+//! - `GET /projection/{session_id}` — return raw homeostatic state (auth-protected)
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
-use axum::{Router, routing::get};
+use axum::{Router, middleware, routing::get};
 use serde::Serialize;
 use serde_json::json;
 use tracing::instrument;
@@ -16,15 +16,32 @@ use tracing::instrument;
 use autonomic_controller::evaluate;
 use autonomic_core::gating::{AutonomicGatingProfile, HomeostaticState};
 
+use crate::auth::{AuthConfig, auth_middleware};
 use crate::state::AppState;
 
 /// Build the axum router with all endpoints.
+///
+/// Health endpoint is always unprotected (for load balancer / Railway health checks).
+/// Gating and projection endpoints are protected with JWT auth when a secret is configured.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    build_router_with_auth(state, AuthConfig::from_env())
+}
+
+/// Build the router with an explicit auth config (used in tests).
+pub fn build_router_with_auth(state: AppState, auth_config: AuthConfig) -> Router {
+    // Protected routes: gating + projection
+    let protected = Router::new()
         .route("/gating/{session_id}", get(get_gating))
         .route("/projection/{session_id}", get(get_projection))
-        .with_state(state)
+        .route_layer(middleware::from_fn_with_state(auth_config, auth_middleware))
+        .with_state(state.clone());
+
+    // Public routes: health
+    let public = Router::new()
+        .route("/health", get(health))
+        .with_state(state);
+
+    public.merge(protected)
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -143,10 +160,36 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
+    use lago_auth::jwt::BroomvaClaims;
     use tower::ServiceExt;
+
+    const TEST_SECRET: &str = "autonomic-test-secret-32bytes!!";
 
     fn test_state() -> AppState {
         AppState::new(RuleSet::new())
+    }
+
+    fn app_no_auth() -> Router {
+        build_router_with_auth(test_state(), AuthConfig::disabled())
+    }
+
+    fn app_with_auth() -> Router {
+        build_router_with_auth(test_state(), AuthConfig::with_secret(TEST_SECRET))
+    }
+
+    fn make_token(secret: &str) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = BroomvaClaims {
+            sub: "agent-1".to_string(),
+            email: "agent@broomva.tech".to_string(),
+            exp: now + 3600,
+            iat: now,
+        };
+        let key = jsonwebtoken::EncodingKey::from_secret(secret.as_bytes());
+        jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &key).unwrap()
     }
 
     async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
@@ -154,9 +197,11 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    // --- Health endpoint (always unprotected) ---
+
     #[tokio::test]
-    async fn health_endpoint() {
-        let app = build_router(test_state());
+    async fn health_without_token_returns_200() {
+        let app = app_with_auth();
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())
@@ -169,9 +214,11 @@ mod tests {
         assert_eq!(json["status"], "ok");
     }
 
+    // --- Gating endpoint: auth disabled (local dev) ---
+
     #[tokio::test]
-    async fn gating_endpoint_default_session() {
-        let app = build_router(test_state());
+    async fn gating_no_auth_no_token_returns_200() {
+        let app = app_no_auth();
         let req = Request::builder()
             .uri("/gating/test-session")
             .body(Body::empty())
@@ -185,11 +232,88 @@ mod tests {
         assert_eq!(json["profile"]["operational"]["allow_side_effects"], true);
     }
 
+    // --- Gating endpoint: auth enabled ---
+
     #[tokio::test]
-    async fn projection_endpoint_not_found() {
-        let app = build_router(test_state());
+    async fn gating_auth_enabled_no_token_returns_401() {
+        let app = app_with_auth();
+        let req = Request::builder()
+            .uri("/gating/test-session")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn gating_auth_enabled_invalid_token_returns_401() {
+        let app = app_with_auth();
+        let req = Request::builder()
+            .uri("/gating/test-session")
+            .header("authorization", "Bearer invalid-garbage-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn gating_auth_enabled_wrong_secret_returns_401() {
+        let token = make_token("wrong-secret-not-the-right-one!!");
+        let app = app_with_auth();
+        let req = Request::builder()
+            .uri("/gating/test-session")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn gating_auth_enabled_valid_token_returns_200() {
+        let token = make_token(TEST_SECRET);
+        let app = app_with_auth();
+        let req = Request::builder()
+            .uri("/gating/test-session")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["session_id"], "test-session");
+    }
+
+    // --- Projection endpoint: auth enabled ---
+
+    #[tokio::test]
+    async fn projection_auth_enabled_no_token_returns_401() {
+        let app = app_with_auth();
         let req = Request::builder()
             .uri("/projection/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn projection_auth_enabled_valid_token_returns_200() {
+        let token = make_token(TEST_SECRET);
+        let app = app_with_auth();
+        let req = Request::builder()
+            .uri("/projection/nonexistent")
+            .header("authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap();
 
@@ -198,8 +322,9 @@ mod tests {
 
         let json = body_json(resp).await;
         assert_eq!(json["found"], false);
-        assert_eq!(json["session_id"], "nonexistent");
     }
+
+    // --- Projection endpoint with data (auth disabled for backward-compat) ---
 
     #[tokio::test]
     async fn projection_endpoint_with_data() {
@@ -212,7 +337,7 @@ mod tests {
             map.insert("sess-1".into(), hs);
         }
 
-        let app = build_router(state);
+        let app = build_router_with_auth(state, AuthConfig::disabled());
         let req = Request::builder()
             .uri("/projection/sess-1")
             .body(Body::empty())

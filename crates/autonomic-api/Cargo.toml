@@ -14,9 +14,11 @@ autonomic-controller.workspace = true
 autonomic-lago.workspace = true
 aios-protocol.workspace = true
 lago-core.workspace = true
+lago-auth.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+jsonwebtoken.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 

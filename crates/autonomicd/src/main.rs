@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use autonomic_api::{AppState, build_router};
+use autonomic_api::{AppState, AuthConfig, build_router_with_auth};
 use autonomic_controller::{
     BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, SpendVelocityRule, StrategyRule,
     SurvivalRule, TokenExhaustionRule,
@@ -102,7 +102,8 @@ async fn main() -> Result<()> {
         AppState::with_projections(projections, rules)
     };
 
-    let app = build_router(state);
+    let auth_config = AuthConfig::from_env();
+    let app = build_router_with_auth(state, auth_config);
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     info!(addr = %config.bind, "autonomicd listening");
