@@ -126,7 +126,7 @@ mod tests {
         Arc::new(RedbJournal::open(db_path).unwrap()) as Arc<dyn Journal>
     }
 
-    /// Write autonomic events directly to the journal as EventEnvelopes.
+    /// Write autonomic events directly to the journal as `EventEnvelope`s.
     async fn write_events(
         journal: &Arc<dyn Journal>,
         session_id: &str,
