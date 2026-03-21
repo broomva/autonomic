@@ -8,6 +8,7 @@
 pub mod cognitive_rules;
 pub mod economic_rules;
 pub mod engine;
+pub mod eval_rules;
 pub mod operational_rules;
 pub mod projection;
 pub mod strategy_rules;
@@ -16,6 +17,7 @@ pub mod strategy_rules;
 pub use cognitive_rules::{ContextPressureRule, TokenExhaustionRule};
 pub use economic_rules::{BudgetExhaustionRule, SpendVelocityRule, SurvivalRule};
 pub use engine::evaluate;
+pub use eval_rules::EvalQualityRule;
 pub use operational_rules::ErrorStreakRule;
 pub use projection::fold;
 pub use strategy_rules::StrategyRule;

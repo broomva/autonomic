@@ -118,7 +118,37 @@ pub struct StrategyState {
     pub last_strategy_event_ms: u64,
 }
 
-/// The three-pillar homeostatic state for an agent session.
+/// Evaluation quality tracking state.
+///
+/// Accumulated from `eval.*` custom events emitted by Nous evaluators.
+/// Used by the `EvalQualityRule` to gate agent behavior based on quality scores.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalState {
+    /// Count of inline evaluations completed.
+    pub inline_eval_count: u32,
+    /// Count of async evaluations completed.
+    pub async_eval_count: u32,
+    /// Aggregate quality score (0.0..1.0), exponential moving average.
+    pub aggregate_quality_score: f64,
+    /// Quality trend (positive = improving, negative = degrading).
+    pub quality_trend: f64,
+    /// Timestamp of the last evaluation (ms since epoch).
+    pub last_eval_ms: u64,
+}
+
+impl Default for EvalState {
+    fn default() -> Self {
+        Self {
+            inline_eval_count: 0,
+            async_eval_count: 0,
+            aggregate_quality_score: 1.0, // Optimistic start
+            quality_trend: 0.0,
+            last_eval_ms: 0,
+        }
+    }
+}
+
+/// The homeostatic state for an agent session.
 ///
 /// This is the projection state: accumulated from the event stream
 /// and used as input to the rule engine.
@@ -134,6 +164,8 @@ pub struct HomeostaticState {
     pub economic: EconomicState,
     /// Strategy event tracking.
     pub strategy: StrategyState,
+    /// Evaluation quality tracking.
+    pub eval: EvalState,
     /// Sequence number of the last event processed.
     pub last_event_seq: u64,
     /// Timestamp of the last event processed (ms since epoch).
@@ -224,5 +256,39 @@ mod tests {
         assert_eq!(back.decisions_logged, 12);
         assert_eq!(back.critiques_completed, 3);
         assert_eq!(back.last_strategy_event_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn eval_state_default_optimistic() {
+        let eval = EvalState::default();
+        assert_eq!(eval.inline_eval_count, 0);
+        assert_eq!(eval.async_eval_count, 0);
+        assert!((eval.aggregate_quality_score - 1.0).abs() < f64::EPSILON);
+        assert!((eval.quality_trend).abs() < f64::EPSILON);
+        assert_eq!(eval.last_eval_ms, 0);
+    }
+
+    #[test]
+    fn eval_state_serde_roundtrip() {
+        let eval = EvalState {
+            inline_eval_count: 15,
+            async_eval_count: 3,
+            aggregate_quality_score: 0.78,
+            quality_trend: -0.02,
+            last_eval_ms: 1_700_000_000_000,
+        };
+        let json = serde_json::to_string(&eval).unwrap();
+        let back: EvalState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.inline_eval_count, 15);
+        assert_eq!(back.async_eval_count, 3);
+        assert!((back.aggregate_quality_score - 0.78).abs() < f64::EPSILON);
+        assert!((back.quality_trend - (-0.02)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn homeostatic_state_includes_eval() {
+        let state = HomeostaticState::for_agent("test");
+        assert_eq!(state.eval.inline_eval_count, 0);
+        assert!((state.eval.aggregate_quality_score - 1.0).abs() < f64::EPSILON);
     }
 }

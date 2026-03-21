@@ -107,6 +107,8 @@ pub fn fold(
                 apply_autonomic_event(&mut state, &autonomic_event);
             } else if event_type.starts_with(STRATEGY_EVENT_PREFIX) {
                 apply_strategy_event(&mut state, event_type, ts_ms);
+            } else if event_type.starts_with(EVAL_EVENT_PREFIX) {
+                apply_eval_event(&mut state, event_type, data, ts_ms);
             }
         }
 
@@ -139,6 +141,9 @@ fn apply_token_usage(state: &mut HomeostaticState, usage: &TokenUsage) {
 
 /// Prefix for strategy custom events emitted by strategy skills to Lago.
 const STRATEGY_EVENT_PREFIX: &str = "strategy.";
+
+/// Prefix for evaluation events emitted by Nous to Lago.
+const EVAL_EVENT_PREFIX: &str = "eval.";
 
 /// Apply an Autonomic-specific event to state.
 fn apply_autonomic_event(state: &mut HomeostaticState, event: &AutonomicEvent) {
@@ -201,6 +206,63 @@ fn apply_strategy_event(state: &mut HomeostaticState, event_type: &str, ts_ms: u
         _ => {
             // Unknown strategy event subtype — no state change,
             // but timestamp is still updated above.
+        }
+    }
+}
+
+/// Exponential moving average smoothing factor for eval quality scores.
+const EVAL_EMA_ALPHA: f64 = 0.3;
+
+/// Apply an evaluation event to state.
+///
+/// Eval events arrive as `EventKind::Custom` with `"eval."` prefix.
+/// They update the `EvalState` with quality score tracking.
+fn apply_eval_event(
+    state: &mut HomeostaticState,
+    event_type: &str,
+    data: &serde_json::Value,
+    ts_ms: u64,
+) {
+    state.eval.last_eval_ms = ts_ms;
+
+    match event_type {
+        "eval.InlineCompleted" => {
+            state.eval.inline_eval_count += 1;
+            if let Some(score) = data.get("score").and_then(serde_json::Value::as_f64) {
+                let prev = state.eval.aggregate_quality_score;
+                state.eval.aggregate_quality_score =
+                    EVAL_EMA_ALPHA * score + (1.0 - EVAL_EMA_ALPHA) * prev;
+                state.eval.quality_trend = state.eval.aggregate_quality_score - prev;
+            }
+        }
+        "eval.AsyncCompleted" => {
+            state.eval.async_eval_count += 1;
+            // Aggregate from scores array if present.
+            if let Some(scores) = data.get("scores").and_then(|v| v.as_array()) {
+                for score_obj in scores {
+                    if let Some(score) = score_obj.get("value").and_then(serde_json::Value::as_f64)
+                    {
+                        let prev = state.eval.aggregate_quality_score;
+                        state.eval.aggregate_quality_score =
+                            EVAL_EMA_ALPHA * score + (1.0 - EVAL_EMA_ALPHA) * prev;
+                        state.eval.quality_trend = state.eval.aggregate_quality_score - prev;
+                    }
+                }
+            }
+        }
+        "eval.QualityChanged" => {
+            // Direct quality update from Nous.
+            if let Some(quality) = data
+                .get("aggregate_quality")
+                .and_then(serde_json::Value::as_f64)
+            {
+                let prev = state.eval.aggregate_quality_score;
+                state.eval.aggregate_quality_score = quality;
+                state.eval.quality_trend = quality - prev;
+            }
+        }
+        _ => {
+            // Unknown eval event subtype — timestamp updated above.
         }
     }
 }
@@ -574,5 +636,122 @@ mod tests {
         assert!(decision.rationale.contains("drift alerts"));
         assert!(decision.rationale.contains("high decision velocity"));
         assert!(decision.rationale.contains("critiques completed"));
+    }
+
+    // ── Eval event tests ──
+
+    fn eval_event(event_type: &str, data: serde_json::Value) -> EventKind {
+        EventKind::Custom {
+            event_type: event_type.to_owned(),
+            data,
+        }
+    }
+
+    #[test]
+    fn fold_eval_inline_completed_updates_quality() {
+        let state = default_state();
+        let kind = eval_event(
+            "eval.InlineCompleted",
+            serde_json::json!({
+                "evaluator": "token_efficiency",
+                "score": 0.8,
+                "label": "good",
+                "layer": "execution",
+                "session_id": "s1"
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.eval.inline_eval_count, 1);
+        assert!(new_state.eval.aggregate_quality_score < 1.0); // EMA moved from 1.0 toward 0.8
+        assert_eq!(new_state.eval.last_eval_ms, 5000);
+    }
+
+    #[test]
+    fn fold_eval_async_completed_updates_quality() {
+        let state = default_state();
+        let kind = eval_event(
+            "eval.AsyncCompleted",
+            serde_json::json!({
+                "evaluator": "plan_quality",
+                "scores": [
+                    {"evaluator": "plan_quality", "value": 0.7, "label": "warning", "layer": "reasoning"}
+                ],
+                "session_id": "s1",
+                "duration_ms": 500
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 6000);
+        assert_eq!(new_state.eval.async_eval_count, 1);
+        assert!(new_state.eval.aggregate_quality_score < 1.0);
+        assert_eq!(new_state.eval.last_eval_ms, 6000);
+    }
+
+    #[test]
+    fn fold_eval_quality_changed_sets_directly() {
+        let state = default_state();
+        let kind = eval_event(
+            "eval.QualityChanged",
+            serde_json::json!({
+                "session_id": "s1",
+                "aggregate_quality": 0.72,
+                "trend": -0.05,
+                "inline_count": 10,
+                "async_count": 2
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 7000);
+        assert!((new_state.eval.aggregate_quality_score - 0.72).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fold_eval_events_then_quality_rule_fires() {
+        use crate::eval_rules::EvalQualityRule;
+        use autonomic_core::rules::HomeostaticRule;
+
+        // Fold multiple low-quality inline eval events to bring quality down.
+        let mut state = default_state();
+        for i in 0..10 {
+            let kind = eval_event(
+                "eval.InlineCompleted",
+                serde_json::json!({
+                    "evaluator": "tool_correctness",
+                    "score": 0.3,
+                    "label": "critical",
+                    "layer": "action",
+                    "session_id": "s1"
+                }),
+            );
+            state = fold(state, &kind, i, (i + 1) * 1000);
+        }
+
+        // Quality should have degraded significantly via EMA.
+        assert!(state.eval.aggregate_quality_score < 0.5);
+
+        let rule = EvalQualityRule::default();
+        let decision = rule.evaluate(&state).expect("rule should fire");
+        assert!(
+            decision.rationale.contains("critically low")
+                || decision.rationale.contains("below warning")
+        );
+    }
+
+    #[test]
+    fn fold_eval_events_do_not_affect_other_state() {
+        let state = default_state();
+        let kind = eval_event(
+            "eval.InlineCompleted",
+            serde_json::json!({
+                "evaluator": "test",
+                "score": 0.5,
+                "label": "warning",
+                "layer": "execution",
+                "session_id": "s1"
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 5000);
+        // Other state pillars should be untouched.
+        assert_eq!(new_state.operational.error_streak, 0);
+        assert_eq!(new_state.cognitive.total_tokens_used, 0);
+        assert_eq!(new_state.strategy.drift_alerts, 0);
     }
 }
