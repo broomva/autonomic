@@ -37,4 +37,4 @@ EXPOSE 3002
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:3002/health || exit 1
 
-CMD ["autonomicd", "--http-port", "3002"]
+CMD ["autonomicd", "--bind", "0.0.0.0:3002"]
