@@ -11,6 +11,7 @@ description = "Pure rule engine and projection reducer for the Autonomic homeost
 [dependencies]
 autonomic-core.workspace = true
 aios-protocol.workspace = true
+anima-core.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -18,8 +18,8 @@ pub use economic::{CostReason, EconomicMode, EconomicState, ModelCostRates, Mode
 pub use error::{AutonomicError, AutonomicResult};
 pub use events::AutonomicEvent;
 pub use gating::{
-    AutonomicGatingProfile, CognitiveState, EconomicGates, EvalState, HomeostaticState,
-    OperationalState, StrategyState,
+    AutonomicGatingProfile, BeliefState, CognitiveState, EconomicGates, EvalState,
+    HomeostaticState, OperationalState, StrategyState,
 };
 pub use hysteresis::HysteresisGate;
 pub use identity::EconomicIdentity;

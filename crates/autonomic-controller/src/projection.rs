@@ -105,6 +105,8 @@ pub fn fold(
         EventKind::Custom { event_type, data } => {
             if let Some(autonomic_event) = AutonomicEvent::from_custom(event_type, data) {
                 apply_autonomic_event(&mut state, &autonomic_event);
+            } else if event_type.starts_with(ANIMA_EVENT_PREFIX) {
+                apply_anima_event(&mut state, event_type, data, ts_ms);
             } else if event_type.starts_with(STRATEGY_EVENT_PREFIX) {
                 apply_strategy_event(&mut state, event_type, ts_ms);
             } else if event_type.starts_with(EVAL_EVENT_PREFIX) {
@@ -138,6 +140,9 @@ fn apply_token_usage(state: &mut HomeostaticState, usage: &TokenUsage) {
             state.cognitive.total_tokens_used as f32 / total_budget as f32;
     }
 }
+
+/// Prefix for Anima belief events emitted to Lago.
+const ANIMA_EVENT_PREFIX: &str = "anima.";
 
 /// Prefix for strategy custom events emitted by strategy skills to Lago.
 const STRATEGY_EVENT_PREFIX: &str = "strategy.";
@@ -182,6 +187,104 @@ fn apply_autonomic_event(state: &mut HomeostaticState, event: &AutonomicEvent) {
         }
         AutonomicEvent::GatingDecision { .. } => {
             // Informational — no state mutation needed
+        }
+    }
+}
+
+/// Apply an Anima belief event to state.
+///
+/// Anima events arrive as `EventKind::Custom` with `"anima."` prefix.
+/// They update the `BeliefState` pillar with capability, trust, reputation,
+/// and violation tracking. Economic belief updates also feed into the
+/// economic pillar's balance.
+fn apply_anima_event(
+    state: &mut HomeostaticState,
+    event_type: &str,
+    data: &serde_json::Value,
+    ts_ms: u64,
+) {
+    state.belief.last_belief_event_ms = ts_ms;
+
+    match event_type {
+        "anima.capability_granted" => {
+            state.belief.capability_count += 1;
+        }
+        "anima.capability_revoked" => {
+            state.belief.capability_count = state.belief.capability_count.saturating_sub(1);
+        }
+        "anima.trust_updated" => {
+            if let Some(new_score) = data.get("new_score").and_then(serde_json::Value::as_f64) {
+                // Recompute trust metrics incrementally.
+                // We track peer count and running averages.
+                let interaction_success = data
+                    .get("interaction_success")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+
+                if interaction_success {
+                    // New peer or existing peer — update count if new.
+                    // We can't perfectly track unique peers without a set,
+                    // so we use the peer_count as reported or infer from the event.
+                    // For a pure fold, we re-derive from the running stats.
+                    let old_count = state.belief.trust_peer_count;
+                    let is_new_peer = data.get("peer_id").is_some() && old_count == 0;
+
+                    if is_new_peer || old_count == 0 {
+                        state.belief.trust_peer_count = 1;
+                        state.belief.average_trust = new_score;
+                        state.belief.min_trust = new_score;
+                    } else {
+                        // Update running average: assume this is an update to
+                        // an existing peer (conservative — avoids inflating count).
+                        // The average moves toward new_score using EMA.
+                        let alpha = 1.0 / f64::from(old_count + 1);
+                        state.belief.average_trust =
+                            alpha * new_score + (1.0 - alpha) * state.belief.average_trust;
+                        if new_score < state.belief.min_trust {
+                            state.belief.min_trust = new_score;
+                        }
+                    }
+                } else {
+                    // Failed interaction — trust decreased.
+                    let old_count = state.belief.trust_peer_count;
+                    if old_count == 0 {
+                        state.belief.trust_peer_count = 1;
+                        state.belief.average_trust = new_score;
+                        state.belief.min_trust = new_score;
+                    } else {
+                        let alpha = 1.0 / f64::from(old_count + 1);
+                        state.belief.average_trust =
+                            alpha * new_score + (1.0 - alpha) * state.belief.average_trust;
+                        if new_score < state.belief.min_trust {
+                            state.belief.min_trust = new_score;
+                        }
+                    }
+                }
+
+                // Update reputation based on trust trend.
+                // Reputation is a moving average of overall trust health.
+                let total_interactions = state.belief.trust_peer_count;
+                if total_interactions > 0 {
+                    state.belief.reputation_score = state.belief.average_trust;
+                }
+            }
+        }
+        "anima.policy_violation_detected" => {
+            state.belief.violations += 1;
+            // Degrade reputation on violations.
+            state.belief.reputation_score = (state.belief.reputation_score - 0.05).max(0.0);
+        }
+        "anima.economic_belief_updated" => {
+            // Feed economic belief updates into the economic pillar.
+            if let Some(balance) = data
+                .get("balance_micro_credits")
+                .and_then(serde_json::Value::as_i64)
+            {
+                state.economic.balance_micro_credits = balance;
+            }
+        }
+        _ => {
+            // Unknown anima event subtype — timestamp updated above.
         }
     }
 }
@@ -753,5 +856,221 @@ mod tests {
         assert_eq!(new_state.operational.error_streak, 0);
         assert_eq!(new_state.cognitive.total_tokens_used, 0);
         assert_eq!(new_state.strategy.drift_alerts, 0);
+    }
+
+    // ── Anima belief event tests ──
+
+    fn anima_event(event_type: &str, data: serde_json::Value) -> EventKind {
+        EventKind::Custom {
+            event_type: event_type.to_owned(),
+            data,
+        }
+    }
+
+    #[test]
+    fn fold_anima_capability_granted_increments_count() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.capability_granted",
+            serde_json::json!({
+                "type": "capability_granted",
+                "capability": "chat:send",
+                "granted_by": "server-1",
+                "expires_at": null,
+                "constraints": {}
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.belief.capability_count, 1);
+        assert_eq!(new_state.belief.last_belief_event_ms, 5000);
+    }
+
+    #[test]
+    fn fold_anima_capability_revoked_decrements_count() {
+        let mut state = default_state();
+        state.belief.capability_count = 3;
+        let kind = anima_event(
+            "anima.capability_revoked",
+            serde_json::json!({
+                "type": "capability_revoked",
+                "capability": "chat:send",
+                "revoked_by": "server-1",
+                "reason": "expired"
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 6000);
+        assert_eq!(new_state.belief.capability_count, 2);
+    }
+
+    #[test]
+    fn fold_anima_capability_revoked_saturates_at_zero() {
+        let state = default_state();
+        assert_eq!(state.belief.capability_count, 0);
+        let kind = anima_event(
+            "anima.capability_revoked",
+            serde_json::json!({
+                "type": "capability_revoked",
+                "capability": "chat:send",
+                "revoked_by": "server-1",
+                "reason": "expired"
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 6000);
+        assert_eq!(new_state.belief.capability_count, 0);
+    }
+
+    #[test]
+    fn fold_anima_trust_updated_tracks_trust() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.trust_updated",
+            serde_json::json!({
+                "type": "trust_updated",
+                "peer_id": "peer-1",
+                "new_score": 0.8,
+                "interaction_success": true
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 7000);
+        assert_eq!(new_state.belief.trust_peer_count, 1);
+        assert!((new_state.belief.average_trust - 0.8).abs() < f64::EPSILON);
+        assert!((new_state.belief.min_trust - 0.8).abs() < f64::EPSILON);
+        assert_eq!(new_state.belief.last_belief_event_ms, 7000);
+    }
+
+    #[test]
+    fn fold_anima_trust_updated_failed_interaction() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.trust_updated",
+            serde_json::json!({
+                "type": "trust_updated",
+                "peer_id": "peer-1",
+                "new_score": 0.3,
+                "interaction_success": false
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 7000);
+        assert_eq!(new_state.belief.trust_peer_count, 1);
+        assert!((new_state.belief.average_trust - 0.3).abs() < f64::EPSILON);
+        assert!((new_state.belief.min_trust - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fold_anima_policy_violation_increments_and_degrades_reputation() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.policy_violation_detected",
+            serde_json::json!({
+                "type": "policy_violation_detected",
+                "capability": "shell:exec",
+                "reason": "exceeds ceiling",
+                "blocked": true
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 8000);
+        assert_eq!(new_state.belief.violations, 1);
+        // Reputation should have decreased from 1.0 by 0.05.
+        assert!((new_state.belief.reputation_score - 0.95).abs() < f64::EPSILON);
+        assert_eq!(new_state.belief.last_belief_event_ms, 8000);
+    }
+
+    #[test]
+    fn fold_anima_economic_belief_updated_feeds_economic_state() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.economic_belief_updated",
+            serde_json::json!({
+                "type": "economic_belief_updated",
+                "balance_micro_credits": 5_000_000,
+                "burn_rate_per_hour": 100.0,
+                "economic_mode": "conserving"
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 9000);
+        assert_eq!(new_state.economic.balance_micro_credits, 5_000_000);
+        assert_eq!(new_state.belief.last_belief_event_ms, 9000);
+    }
+
+    #[test]
+    fn fold_unknown_anima_event_updates_timestamp_only() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.soul_genesis",
+            serde_json::json!({
+                "type": "soul_genesis",
+                "soul": {},
+                "soul_hash": "abc"
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 10000);
+        assert_eq!(new_state.belief.capability_count, 0);
+        assert_eq!(new_state.belief.violations, 0);
+        assert_eq!(new_state.belief.last_belief_event_ms, 10000);
+    }
+
+    #[test]
+    fn fold_anima_events_do_not_affect_other_state() {
+        let state = default_state();
+        let kind = anima_event(
+            "anima.capability_granted",
+            serde_json::json!({
+                "type": "capability_granted",
+                "capability": "chat:send",
+                "granted_by": "server-1",
+                "expires_at": null,
+                "constraints": {}
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.operational.error_streak, 0);
+        assert_eq!(new_state.cognitive.total_tokens_used, 0);
+        assert_eq!(new_state.strategy.drift_alerts, 0);
+        assert_eq!(new_state.eval.inline_eval_count, 0);
+    }
+
+    #[test]
+    fn fold_multiple_violations_then_belief_rule_fires() {
+        use crate::belief_rules::BeliefRule;
+        use autonomic_core::rules::HomeostaticRule;
+
+        let mut state = default_state();
+        // Fold 5 policy violations — reputation drops from 1.0 by 0.05 each.
+        for i in 0..5 {
+            let kind = anima_event(
+                "anima.policy_violation_detected",
+                serde_json::json!({
+                    "type": "policy_violation_detected",
+                    "capability": "shell:exec",
+                    "reason": "exceeds ceiling",
+                    "blocked": true
+                }),
+            );
+            state = fold(state, &kind, i, (i + 1) * 1000);
+        }
+
+        // After 5 violations: reputation = 1.0 - 5*0.05 = 0.75.
+        // 0.75 > 0.5, so default threshold won't fire.
+        // Need more violations to push below 0.5.
+        for i in 5..15 {
+            let kind = anima_event(
+                "anima.policy_violation_detected",
+                serde_json::json!({
+                    "type": "policy_violation_detected",
+                    "capability": "shell:exec",
+                    "reason": "repeated violation",
+                    "blocked": true
+                }),
+            );
+            state = fold(state, &kind, i, (i + 1) * 1000);
+        }
+
+        assert_eq!(state.belief.violations, 15);
+        assert!(state.belief.reputation_score < 0.5);
+
+        let rule = BeliefRule::default();
+        let decision = rule.evaluate(&state).expect("rule should fire");
+        assert_eq!(decision.restrict_side_effects, Some(true));
+        assert!(decision.rationale.contains("policy violation"));
     }
 }

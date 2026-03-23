@@ -148,6 +148,43 @@ impl Default for EvalState {
     }
 }
 
+/// Belief state — tracks Anima agent belief metrics.
+///
+/// Accumulated from `anima.*` custom events emitted to Lago.
+/// Provides the Autonomic controller with visibility into the
+/// agent's capability set, trust network, and policy compliance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeliefState {
+    /// Number of currently granted capabilities.
+    pub capability_count: u32,
+    /// Number of peers with trust scores.
+    pub trust_peer_count: u32,
+    /// Average trust score across all peers (0.0..1.0).
+    pub average_trust: f64,
+    /// Minimum trust score across all peers (0.0..1.0).
+    pub min_trust: f64,
+    /// Overall reputation score (0.0..1.0).
+    pub reputation_score: f64,
+    /// Number of policy violations detected.
+    pub violations: u64,
+    /// Timestamp of the last belief-related event (ms since epoch).
+    pub last_belief_event_ms: u64,
+}
+
+impl Default for BeliefState {
+    fn default() -> Self {
+        Self {
+            capability_count: 0,
+            trust_peer_count: 0,
+            average_trust: 1.0, // Optimistic start (no peers = full trust)
+            min_trust: 1.0,
+            reputation_score: 1.0, // Optimistic start
+            violations: 0,
+            last_belief_event_ms: 0,
+        }
+    }
+}
+
 /// The homeostatic state for an agent session.
 ///
 /// This is the projection state: accumulated from the event stream
@@ -166,6 +203,8 @@ pub struct HomeostaticState {
     pub strategy: StrategyState,
     /// Evaluation quality tracking.
     pub eval: EvalState,
+    /// Anima belief tracking.
+    pub belief: BeliefState,
     /// Sequence number of the last event processed.
     pub last_event_seq: u64,
     /// Timestamp of the last event processed (ms since epoch).
@@ -290,5 +329,46 @@ mod tests {
         let state = HomeostaticState::for_agent("test");
         assert_eq!(state.eval.inline_eval_count, 0);
         assert!((state.eval.aggregate_quality_score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn belief_state_default_optimistic() {
+        let belief = BeliefState::default();
+        assert_eq!(belief.capability_count, 0);
+        assert_eq!(belief.trust_peer_count, 0);
+        assert!((belief.average_trust - 1.0).abs() < f64::EPSILON);
+        assert!((belief.min_trust - 1.0).abs() < f64::EPSILON);
+        assert!((belief.reputation_score - 1.0).abs() < f64::EPSILON);
+        assert_eq!(belief.violations, 0);
+        assert_eq!(belief.last_belief_event_ms, 0);
+    }
+
+    #[test]
+    fn belief_state_serde_roundtrip() {
+        let belief = BeliefState {
+            capability_count: 5,
+            trust_peer_count: 3,
+            average_trust: 0.72,
+            min_trust: 0.45,
+            reputation_score: 0.88,
+            violations: 2,
+            last_belief_event_ms: 1_700_000_000_000,
+        };
+        let json = serde_json::to_string(&belief).unwrap();
+        let back: BeliefState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.capability_count, 5);
+        assert_eq!(back.trust_peer_count, 3);
+        assert!((back.average_trust - 0.72).abs() < f64::EPSILON);
+        assert!((back.min_trust - 0.45).abs() < f64::EPSILON);
+        assert!((back.reputation_score - 0.88).abs() < f64::EPSILON);
+        assert_eq!(back.violations, 2);
+    }
+
+    #[test]
+    fn homeostatic_state_includes_belief() {
+        let state = HomeostaticState::for_agent("test");
+        assert_eq!(state.belief.capability_count, 0);
+        assert_eq!(state.belief.violations, 0);
+        assert!((state.belief.reputation_score - 1.0).abs() < f64::EPSILON);
     }
 }

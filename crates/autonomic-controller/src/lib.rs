@@ -5,6 +5,7 @@
 //! - A rule engine that evaluates homeostatic rules against state
 //! - Concrete rule implementations for economic, cognitive, and operational regulation
 
+pub mod belief_rules;
 pub mod cognitive_rules;
 pub mod economic_rules;
 pub mod engine;
@@ -15,6 +16,7 @@ pub mod strategy_rules;
 pub mod trust_scoring;
 
 // Re-exports
+pub use belief_rules::BeliefRule;
 pub use cognitive_rules::{ContextPressureRule, TokenExhaustionRule};
 pub use economic_rules::{BudgetExhaustionRule, SpendVelocityRule, SurvivalRule};
 pub use engine::evaluate;

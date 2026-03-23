@@ -10,6 +10,7 @@ description = "Core types, traits, and errors for the Autonomic homeostasis cont
 
 [dependencies]
 aios-protocol.workspace = true
+anima-core.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
