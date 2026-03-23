@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Autonomic daemon CLI arguments.
 #[derive(Debug, Parser)]
-#[command(name = "autonomicd", about = "Autonomic homeostasis controller daemon")]
+#[command(name = "autonomicd", version, about = "Autonomic homeostasis controller daemon")]
 pub struct CliArgs {
     /// Bind address for the HTTP API.
     #[arg(long, default_value = "127.0.0.1:3002")]
