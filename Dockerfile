@@ -9,7 +9,8 @@ WORKDIR /build
 ADD https://api.github.com/repos/broomva/lago/git/refs/heads/main /tmp/lago-ref
 RUN git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS && \
     git clone --depth 1 https://github.com/broomva/lago.git ../lago && \
-    git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+    git clone --depth 1 https://github.com/broomva/vigil.git ../vigil && \
+    git clone --depth 1 https://github.com/broomva/anima.git ../anima
 
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
