@@ -1,0 +1,38 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# Coverage
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+
+# Debug
+*.dSYM/
+
+# Claude Code
+.entire/
+
+# Entire CLI injected hooks (chained to our originals)
+.githooks/commit-msg
+.githooks/post-commit
+.githooks/prepare-commit-msg
+.githooks/pre-push.pre-entire

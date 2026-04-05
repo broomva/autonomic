@@ -1,0 +1,19 @@
+version: 1
+controller:
+  gate_sequence:
+    - smoke
+    - check
+    - test
+  retry_budget: 2
+  escalation:
+    trigger: retry_budget_exhausted
+    owner: human_oncall
+rules:
+  - id: no-merge-with-failing-checks
+    type: hard
+    condition: "check == fail or test == fail"
+    action: block_merge
+  - id: require-plan-for-long-task
+    type: hard
+    condition: "task_duration_minutes > 30 and plan_missing"
+    action: block_execution

@@ -1,0 +1,31 @@
+version: 1
+zones:
+  autonomic_core:
+    paths:
+      - crates/autonomic-core/
+    owner: autonomic-team
+    critical: true
+  autonomic_controller:
+    paths:
+      - crates/autonomic-controller/
+    owner: autonomic-team
+    critical: true
+  autonomic_lago:
+    paths:
+      - crates/autonomic-lago/
+    owner: autonomic-team
+    critical: false
+  autonomic_api:
+    paths:
+      - crates/autonomic-api/
+      - crates/autonomicd/
+    owner: autonomic-team
+    critical: false
+  control_plane:
+    paths:
+      - .control/
+      - docs/control/
+      - scripts/control/
+      - Makefile.control
+    owner: platform-engineering
+    immutable: true
