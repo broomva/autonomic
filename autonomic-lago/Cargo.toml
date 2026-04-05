@@ -1,0 +1,27 @@
+[package]
+name = "autonomic-lago"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Lago bridge for the Autonomic homeostasis controller — event subscription and publishing"
+
+[dependencies]
+autonomic-core.workspace = true
+autonomic-controller.workspace = true
+aios-protocol.workspace = true
+lago-core.workspace = true
+lago-journal.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+lago-journal = { workspace = true }
+tempfile = "3"
+
+[lints]
+workspace = true

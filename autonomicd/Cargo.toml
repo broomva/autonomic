@@ -1,0 +1,30 @@
+[package]
+name = "autonomicd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Daemon binary for the Autonomic homeostasis controller"
+
+[dependencies]
+autonomic-core.workspace = true
+autonomic-controller.workspace = true
+autonomic-lago.workspace = true
+autonomic-api.workspace = true
+anyhow = "1"
+axum.workspace = true
+clap.workspace = true
+lago-core.workspace = true
+lago-journal.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+life-vigil.workspace = true
+
+[lints]
+workspace = true

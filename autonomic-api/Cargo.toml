@@ -1,0 +1,31 @@
+[package]
+name = "autonomic-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "HTTP API server for the Autonomic homeostasis controller"
+
+[dependencies]
+autonomic-core.workspace = true
+autonomic-controller.workspace = true
+autonomic-lago.workspace = true
+aios-protocol.workspace = true
+lago-core.workspace = true
+lago-auth.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jsonwebtoken.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tower = "0.5"
+http-body-util = "0.1"
+
+[lints]
+workspace = true
