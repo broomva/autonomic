@@ -1,0 +1,17 @@
+[package]
+name = "life-autonomic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Homeostasis controller facade for the Life Agent OS — re-exports autonomic-core, autonomic-controller, and autonomic-api"
+
+[dependencies]
+autonomic-core = { path = "../autonomic-core", version = "0.3.0" }
+autonomic-controller = { path = "../autonomic-controller", version = "0.3.0" }
+autonomic-api = { path = "../autonomic-api", version = "0.3.0" }
+
+[lints]
+workspace = true
