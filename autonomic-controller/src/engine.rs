@@ -54,10 +54,10 @@ fn merge_decisions(decisions: &[GatingDecision]) -> AutonomicGatingProfile {
     for d in decisions {
         rationale.push(d.rationale.clone());
 
-        if let Some(mode) = d.economic_mode {
-            if economic_mode_severity(mode) > economic_mode_severity(most_restrictive_mode) {
-                most_restrictive_mode = mode;
-            }
+        if let Some(mode) = d.economic_mode
+            && economic_mode_severity(mode) > economic_mode_severity(most_restrictive_mode)
+        {
+            most_restrictive_mode = mode;
         }
 
         if let Some(tokens) = d.max_tokens_next_turn {
