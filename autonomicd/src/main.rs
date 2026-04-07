@@ -82,6 +82,15 @@ async fn main() -> Result<()> {
         config.lago_data_dir = args.lago_data_dir;
     }
 
+    // Default to .life/autonomic/ when a .life/ project directory exists
+    if config.lago_data_dir.is_none()
+        && let Some(root) = life_paths::find_project_root()
+    {
+        let life_dir = root.join(".life").join("autonomic");
+        info!(path = %life_dir.display(), "using .life/autonomic/ as default data directory");
+        config.lago_data_dir = Some(life_dir.to_string_lossy().into_owned());
+    }
+
     info!(bind = %config.bind, "starting autonomicd");
 
     let rules = build_rule_set(&config);
