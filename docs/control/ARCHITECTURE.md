@@ -12,10 +12,10 @@ smoke (cargo check) → check (fmt + clippy) → test (cargo test)
 
 | Component | Location | Role |
 |-----------|----------|------|
-| Policy | `.control/policy.yaml` | RBAC rules, capability gates, escalation |
-| Commands | `.control/commands.yaml` | Canonical command definitions with setpoints |
-| Topology | `.control/topology.yaml` | Repository structure, agent zones |
-| State | `.control/state.json` | Current gate status tracking |
+| Policy | `.life/control/policy.yaml` | RBAC rules, capability gates, escalation |
+| Commands | `.life/control/commands.yaml` | Canonical command definitions with setpoints |
+| Topology | `.life/control/topology.yaml` | Repository structure, agent zones |
+| State | `.life/control/state.json` | Current gate status tracking |
 | Control Scripts | `scripts/control/` | Gate implementations (smoke, check, test, recover) |
 | Harness Scripts | `scripts/harness/` | Deterministic CI scripts (smoke, test, lint, typecheck) |
 | Git Hooks | `.githooks/` | Pre-commit (smoke), pre-push (check) |

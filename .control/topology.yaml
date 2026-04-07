@@ -23,7 +23,7 @@ zones:
     critical: false
   control_plane:
     paths:
-      - .control/
+      - .life/control/
       - docs/control/
       - scripts/control/
       - Makefile.control
