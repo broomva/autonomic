@@ -96,6 +96,22 @@ pub struct CognitiveState {
     /// Hysteresis gate for context dilation — prevents flapping between
     /// Dilate and Compress decisions in the soft zone.
     pub dilation_gate: HysteresisGate,
+
+    // ── Memory & Knowledge Regulation ──
+    /// Total observations appended in this session.
+    pub observation_count: u32,
+    /// Total memory commits (promotions to permanent storage).
+    pub memory_commit_count: u32,
+    /// Total reflection compactions (memory summarization events).
+    pub compaction_count: u32,
+    /// Knowledge index health score from last lint (0.0-1.0). Default: 1.0.
+    pub knowledge_health: f32,
+    /// Number of notes in the knowledge index at last check.
+    pub knowledge_note_count: u32,
+    /// Number of knowledge searches performed this session.
+    pub knowledge_search_count: u32,
+    /// Timestamp of last knowledge index build (ms since epoch).
+    pub knowledge_last_indexed_ms: u64,
 }
 
 impl Default for CognitiveState {
@@ -110,6 +126,14 @@ impl Default for CognitiveState {
             // Dilation gate: enters dilation at 60% pressure, exits at 45%.
             // min_hold_ms=0 because the shell tracks turns, not wall-clock time.
             dilation_gate: HysteresisGate::new(0.60, 0.45, 0),
+            // Memory & knowledge regulation — default to healthy/empty state.
+            observation_count: 0,
+            memory_commit_count: 0,
+            compaction_count: 0,
+            knowledge_health: 1.0,
+            knowledge_note_count: 0,
+            knowledge_search_count: 0,
+            knowledge_last_indexed_ms: 0,
         }
     }
 }

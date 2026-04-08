@@ -111,7 +111,24 @@ pub fn fold(
                 apply_strategy_event(&mut state, event_type, ts_ms);
             } else if event_type.starts_with(EVAL_EVENT_PREFIX) {
                 apply_eval_event(&mut state, event_type, data, ts_ms);
+            } else if event_type.starts_with(KNOWLEDGE_EVENT_PREFIX) {
+                apply_knowledge_event(&mut state, event_type, data, ts_ms);
             }
+        }
+
+        // ── Memory lifecycle events ──
+        EventKind::ObservationAppended { .. } => {
+            state.cognitive.observation_count += 1;
+        }
+
+        EventKind::MemoryCommitted { .. } => {
+            state.cognitive.memory_commit_count += 1;
+        }
+
+        EventKind::ReflectionCompacted { .. } => {
+            state.cognitive.compaction_count += 1;
+            // Compaction reduces context pressure — reset stale-context counter.
+            state.cognitive.turns_since_compact = 0;
         }
 
         // All other events — no state change
@@ -149,6 +166,9 @@ const STRATEGY_EVENT_PREFIX: &str = "strategy.";
 
 /// Prefix for evaluation events emitted by Nous to Lago.
 const EVAL_EVENT_PREFIX: &str = "eval.";
+
+/// Prefix for knowledge events from lago-knowledge.
+const KNOWLEDGE_EVENT_PREFIX: &str = "knowledge.";
 
 /// Apply an Autonomic-specific event to state.
 fn apply_autonomic_event(state: &mut HomeostaticState, event: &AutonomicEvent) {
@@ -367,6 +387,33 @@ fn apply_eval_event(
         _ => {
             // Unknown eval event subtype — timestamp updated above.
         }
+    }
+}
+
+/// Apply knowledge lifecycle events to cognitive state.
+///
+/// Knowledge events arrive as `EventKind::Custom` with `"knowledge."` prefix.
+/// They update the memory/knowledge regulation fields in `CognitiveState`.
+fn apply_knowledge_event(
+    state: &mut HomeostaticState,
+    event_type: &str,
+    data: &serde_json::Value,
+    _ts_ms: u64,
+) {
+    match event_type {
+        "knowledge.indexed" => {
+            if let Some(count) = data.get("note_count").and_then(|v| v.as_u64()) {
+                state.cognitive.knowledge_note_count = count as u32;
+            }
+            if let Some(health) = data.get("health_score").and_then(|v| v.as_f64()) {
+                state.cognitive.knowledge_health = health as f32;
+            }
+            state.cognitive.knowledge_last_indexed_ms = state.last_event_ms;
+        }
+        "knowledge.searched" => {
+            state.cognitive.knowledge_search_count += 1;
+        }
+        _ => {}
     }
 }
 
@@ -1072,5 +1119,196 @@ mod tests {
         let decision = rule.evaluate(&state).expect("rule should fire");
         assert_eq!(decision.restrict_side_effects, Some(true));
         assert!(decision.rationale.contains("policy violation"));
+    }
+
+    // ── Memory event tests ──
+
+    #[test]
+    fn fold_observation_appended_increments_count() {
+        let state = default_state();
+        let kind = EventKind::ObservationAppended {
+            scope: aios_protocol::MemoryScope::Session,
+            observation_ref: aios_protocol::BlobHash::from_hex("abc123"),
+            source_run_id: None,
+        };
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.cognitive.observation_count, 1);
+    }
+
+    #[test]
+    fn fold_memory_committed_increments_count() {
+        let state = default_state();
+        let kind = EventKind::MemoryCommitted {
+            scope: aios_protocol::MemoryScope::Session,
+            memory_id: aios_protocol::MemoryId::from_string("mem-1".to_string()),
+            committed_ref: aios_protocol::BlobHash::from_hex("def456"),
+            supersedes: None,
+        };
+        let new_state = fold(state, &kind, 1, 6000);
+        assert_eq!(new_state.cognitive.memory_commit_count, 1);
+    }
+
+    #[test]
+    fn fold_reflection_compacted_resets_turns_since_compact() {
+        let mut state = default_state();
+        state.cognitive.turns_since_compact = 15;
+        let kind = EventKind::ReflectionCompacted {
+            scope: aios_protocol::MemoryScope::Session,
+            summary_ref: aios_protocol::BlobHash::from_hex("ghi789"),
+            covers_through_seq: 100,
+        };
+        let new_state = fold(state, &kind, 1, 7000);
+        assert_eq!(new_state.cognitive.compaction_count, 1);
+        assert_eq!(new_state.cognitive.turns_since_compact, 0);
+    }
+
+    #[test]
+    fn fold_multiple_observations_accumulate() {
+        let mut state = default_state();
+        for i in 0..5 {
+            let kind = EventKind::ObservationAppended {
+                scope: aios_protocol::MemoryScope::Session,
+                observation_ref: aios_protocol::BlobHash::from_hex(format!("obs{i}")),
+                source_run_id: None,
+            };
+            state = fold(state, &kind, i, (i + 1) * 1000);
+        }
+        assert_eq!(state.cognitive.observation_count, 5);
+    }
+
+    // ── Knowledge event tests ──
+
+    fn knowledge_event(event_type: &str, data: serde_json::Value) -> EventKind {
+        EventKind::Custom {
+            event_type: event_type.to_owned(),
+            data,
+        }
+    }
+
+    #[test]
+    fn fold_knowledge_indexed_updates_health_and_count() {
+        let state = default_state();
+        let kind = knowledge_event(
+            "knowledge.indexed",
+            serde_json::json!({
+                "note_count": 150,
+                "health_score": 0.82
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.cognitive.knowledge_note_count, 150);
+        assert!((new_state.cognitive.knowledge_health - 0.82).abs() < f32::EPSILON);
+        assert_eq!(new_state.cognitive.knowledge_last_indexed_ms, 5000);
+    }
+
+    #[test]
+    fn fold_knowledge_searched_increments_count() {
+        let state = default_state();
+        let kind = knowledge_event("knowledge.searched", serde_json::json!({}));
+        let new_state = fold(state, &kind, 1, 6000);
+        assert_eq!(new_state.cognitive.knowledge_search_count, 1);
+    }
+
+    #[test]
+    fn fold_multiple_knowledge_searches_accumulate() {
+        let mut state = default_state();
+        for i in 0..5 {
+            let kind = knowledge_event("knowledge.searched", serde_json::json!({}));
+            state = fold(state, &kind, i, (i + 1) * 1000);
+        }
+        assert_eq!(state.cognitive.knowledge_search_count, 5);
+    }
+
+    #[test]
+    fn fold_knowledge_indexed_partial_data() {
+        // Only note_count, no health_score
+        let state = default_state();
+        let kind = knowledge_event("knowledge.indexed", serde_json::json!({ "note_count": 42 }));
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.cognitive.knowledge_note_count, 42);
+        // Health should remain at default (1.0) since no health_score provided
+        assert!((new_state.cognitive.knowledge_health - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn fold_unknown_knowledge_event_no_change() {
+        let state = default_state();
+        let kind = knowledge_event("knowledge.unknown_subtype", serde_json::json!({}));
+        let new_state = fold(state, &kind, 1, 5000);
+        assert_eq!(new_state.cognitive.knowledge_note_count, 0);
+        assert_eq!(new_state.cognitive.knowledge_search_count, 0);
+    }
+
+    #[test]
+    fn fold_knowledge_events_do_not_affect_other_state() {
+        let state = default_state();
+        let kind = knowledge_event(
+            "knowledge.indexed",
+            serde_json::json!({
+                "note_count": 100,
+                "health_score": 0.5
+            }),
+        );
+        let new_state = fold(state, &kind, 1, 5000);
+        // Other state pillars should be untouched.
+        assert_eq!(new_state.operational.error_streak, 0);
+        assert_eq!(new_state.cognitive.total_tokens_used, 0);
+        assert_eq!(new_state.strategy.drift_alerts, 0);
+        assert_eq!(new_state.eval.inline_eval_count, 0);
+    }
+
+    #[test]
+    fn fold_knowledge_events_then_health_rule_fires() {
+        use crate::knowledge_rules::KnowledgeHealthRule;
+        use autonomic_core::rules::HomeostaticRule;
+
+        let mut state = default_state();
+
+        // Report low knowledge health
+        let kind = knowledge_event(
+            "knowledge.indexed",
+            serde_json::json!({
+                "note_count": 100,
+                "health_score": 0.45
+            }),
+        );
+        state = fold(state, &kind, 1, 5000);
+
+        let rule = KnowledgeHealthRule::default();
+        let decision = rule.evaluate(&state).expect("rule should fire");
+        assert!(decision.rationale.contains("knowledge health"));
+        assert_eq!(decision.restrict_expensive_tools, Some(true)); // < 0.5 → restrict
+    }
+
+    #[test]
+    fn fold_memory_bloat_then_health_rule_fires() {
+        use crate::knowledge_rules::KnowledgeHealthRule;
+        use autonomic_core::rules::HomeostaticRule;
+
+        let mut state = default_state();
+
+        // Fold 60 observations with no compaction
+        for i in 0..60 {
+            let kind = EventKind::ObservationAppended {
+                scope: aios_protocol::MemoryScope::Session,
+                observation_ref: aios_protocol::BlobHash::from_hex(format!("obs{i}")),
+                source_run_id: None,
+            };
+            state = fold(state, &kind, i, (i + 1) * 1000);
+        }
+
+        // Also report some knowledge notes so health check doesn't mislead
+        let kind = knowledge_event(
+            "knowledge.indexed",
+            serde_json::json!({
+                "note_count": 50,
+                "health_score": 0.95
+            }),
+        );
+        state = fold(state, &kind, 60, 61_000);
+
+        let rule = KnowledgeHealthRule::default();
+        let decision = rule.evaluate(&state).expect("rule should fire");
+        assert!(decision.rationale.contains("uncompacted observations"));
     }
 }

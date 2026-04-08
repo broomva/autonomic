@@ -12,8 +12,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use autonomic_api::{AppState, AuthConfig, build_router_with_auth};
 use autonomic_controller::{
-    BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, SpendVelocityRule, StrategyRule,
-    SurvivalRule, TokenExhaustionRule,
+    BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, KnowledgeHealthRule,
+    SpendVelocityRule, StrategyRule, SurvivalRule, TokenExhaustionRule,
 };
 use autonomic_core::rules::RuleSet;
 use clap::Parser;
@@ -54,6 +54,9 @@ fn build_rule_set(config: &AutonomicConfig) -> RuleSet {
 
     // Strategy advisory rules
     rules.add(Box::new(StrategyRule::default()));
+
+    // Knowledge & memory regulation
+    rules.add(Box::new(KnowledgeHealthRule::default()));
 
     rules
 }
