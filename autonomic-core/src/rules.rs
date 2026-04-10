@@ -30,6 +30,7 @@ pub struct GatingDecision {
     /// Human-readable rationale.
     pub rationale: String,
     /// Advisory events that a controller may persist after evaluation.
+    #[serde(default)]
     pub advisory_events: Vec<AutonomicEvent>,
 }
 
@@ -161,5 +162,22 @@ mod tests {
         assert_eq!(decision.rule_id, "test");
         assert!(decision.economic_mode.is_none());
         assert!(decision.max_tokens_next_turn.is_none());
+    }
+
+    #[test]
+    fn gating_decision_deserializes_missing_advisory_events_as_empty() {
+        let json = serde_json::json!({
+            "rule_id": "legacy",
+            "economic_mode": null,
+            "max_tokens_next_turn": null,
+            "preferred_model": null,
+            "restrict_expensive_tools": null,
+            "restrict_side_effects": null,
+            "max_tool_calls_per_tick": null,
+            "rationale": "legacy payload"
+        });
+
+        let decision: GatingDecision = serde_json::from_value(json).unwrap();
+        assert!(decision.advisory_events.is_empty());
     }
 }

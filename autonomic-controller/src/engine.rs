@@ -267,6 +267,18 @@ mod tests {
         let state = HomeostaticState::for_agent("test");
         let profile = evaluate(&state, &rules);
         assert_eq!(profile.advisory_events.len(), 1);
+        match &profile.advisory_events[0] {
+            autonomic_core::AutonomicEvent::RollbackRequested {
+                artifact,
+                rollback_to,
+                reason,
+            } => {
+                assert_eq!(artifact, "knowledge_thresholds");
+                assert_eq!(rollback_to, "v1");
+                assert_eq!(reason, "regression");
+            }
+            other => panic!("expected rollback advisory event, got {other:?}"),
+        }
     }
 
     #[test]

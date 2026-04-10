@@ -381,6 +381,19 @@ mod tests {
     }
 
     #[test]
+    fn regression_rule_restricts_without_advisory_when_rollback_target_missing() {
+        let rule = KnowledgeRegressionRule::default();
+        let mut state = state_with_promotion(4);
+        state.cognitive.knowledge_promotion.rollback_target = None;
+
+        let decision = rule.evaluate(&state).expect("rule should fire");
+
+        assert!(decision.rationale.contains("no rollback target"));
+        assert_eq!(decision.restrict_side_effects, Some(true));
+        assert!(decision.advisory_events.is_empty());
+    }
+
+    #[test]
     fn regression_rule_is_idempotent_after_rollback_requested() {
         let rule = KnowledgeRegressionRule::default();
         let mut state = state_with_promotion(4);

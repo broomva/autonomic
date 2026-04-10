@@ -80,13 +80,18 @@ async fn get_gating(
     let homeostatic_state = get_or_bootstrap(&state, &session_id).await;
 
     let profile = evaluate(&homeostatic_state, &state.rules);
-    publish_advisory_events(&state, &session_id, profile.advisory_events.clone()).await;
+    let published_watermark =
+        publish_advisory_events(&state, &session_id, profile.advisory_events.clone()).await;
+    let (last_event_seq, last_event_ms) = published_watermark.unwrap_or((
+        homeostatic_state.last_event_seq,
+        homeostatic_state.last_event_ms,
+    ));
 
     Ok(Json(GatingResponse {
         session_id,
         profile,
-        last_event_seq: homeostatic_state.last_event_seq,
-        last_event_ms: homeostatic_state.last_event_ms,
+        last_event_seq,
+        last_event_ms,
     }))
 }
 
@@ -175,15 +180,20 @@ async fn get_or_bootstrap(state: &AppState, session_id: &str) -> HomeostaticStat
     HomeostaticState::for_agent(session_id)
 }
 
-async fn publish_advisory_events(state: &AppState, session_id: &str, events: Vec<AutonomicEvent>) {
+async fn publish_advisory_events(
+    state: &AppState,
+    session_id: &str,
+    events: Vec<AutonomicEvent>,
+) -> Option<(u64, u64)> {
     if events.is_empty() {
-        return;
+        return None;
     }
 
     let Some(journal) = &state.journal else {
-        return;
+        return None;
     };
 
+    let mut watermark = None;
     for event in events {
         let payload = event.clone().into_event_kind();
         match autonomic_lago::publish_event(journal.clone(), session_id, "main", event).await {
@@ -194,6 +204,7 @@ async fn publish_advisory_events(state: &AppState, session_id: &str, events: Vec
                     .entry(session_id.to_owned())
                     .or_insert_with(|| HomeostaticState::for_agent(session_id));
                 *projected = autonomic_controller::fold(projected.clone(), &payload, seq, ts_ms);
+                watermark = Some((seq, ts_ms));
             }
             Err(error) => {
                 tracing::warn!(
@@ -204,16 +215,27 @@ async fn publish_advisory_events(state: &AppState, session_id: &str, events: Vec
             }
         }
     }
+
+    watermark
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autonomic_core::rules::RuleSet;
+    use std::collections::HashMap;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+
+    use autonomic_core::rules::{GatingDecision, HomeostaticRule, RuleSet};
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
     use lago_auth::jwt::BroomvaClaims;
+    use lago_core::error::{LagoError, LagoResult};
+    use lago_core::event::EventEnvelope;
+    use lago_core::id::{BranchId, EventId, SeqNo, SessionId};
+    use lago_core::journal::{EventQuery, EventStream, Journal};
+    use lago_core::session::Session;
     use tower::ServiceExt;
 
     const TEST_SECRET: &str = "autonomic-test-secret-32bytes!!";
@@ -248,6 +270,146 @@ mod tests {
     async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[derive(Clone)]
+    enum AppendBehavior {
+        Success(SeqNo),
+        Failure(&'static str),
+    }
+
+    struct MockJournal {
+        behavior: AppendBehavior,
+        appended: Arc<Mutex<Vec<EventEnvelope>>>,
+    }
+
+    impl MockJournal {
+        fn success(seq: SeqNo) -> Arc<Self> {
+            Arc::new(Self {
+                behavior: AppendBehavior::Success(seq),
+                appended: Arc::new(Mutex::new(Vec::new())),
+            })
+        }
+
+        fn failure(message: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                behavior: AppendBehavior::Failure(message),
+                appended: Arc::new(Mutex::new(Vec::new())),
+            })
+        }
+    }
+
+    impl Journal for MockJournal {
+        fn append(
+            &self,
+            event: EventEnvelope,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<SeqNo>> + Send + '_>> {
+            let behavior = self.behavior.clone();
+            let appended = self.appended.clone();
+            Box::pin(async move {
+                match behavior {
+                    AppendBehavior::Success(seq) => {
+                        appended.lock().unwrap().push(event);
+                        Ok(seq)
+                    }
+                    AppendBehavior::Failure(message) => Err(LagoError::Journal(message.into())),
+                }
+            })
+        }
+
+        fn append_batch(
+            &self,
+            events: Vec<EventEnvelope>,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<SeqNo>> + Send + '_>> {
+            let behavior = self.behavior.clone();
+            let appended = self.appended.clone();
+            Box::pin(async move {
+                match behavior {
+                    AppendBehavior::Success(seq) => {
+                        appended.lock().unwrap().extend(events);
+                        Ok(seq)
+                    }
+                    AppendBehavior::Failure(message) => Err(LagoError::Journal(message.into())),
+                }
+            })
+        }
+
+        fn read(
+            &self,
+            _query: EventQuery,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<Vec<EventEnvelope>>> + Send + '_>>
+        {
+            let appended = self.appended.clone();
+            Box::pin(async move { Ok(appended.lock().unwrap().clone()) })
+        }
+
+        fn get_event(
+            &self,
+            _event_id: &EventId,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<Option<EventEnvelope>>> + Send + '_>>
+        {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn head_seq(
+            &self,
+            _session_id: &SessionId,
+            _branch_id: &BranchId,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<SeqNo>> + Send + '_>> {
+            Box::pin(async { Ok(0) })
+        }
+
+        fn stream(
+            &self,
+            _session_id: SessionId,
+            _branch_id: BranchId,
+            _after_seq: SeqNo,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<EventStream>> + Send + '_>>
+        {
+            Box::pin(async { Err(LagoError::Journal("stream unsupported in mock".into())) })
+        }
+
+        fn put_session(
+            &self,
+            _session: Session,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn get_session(
+            &self,
+            _session_id: &SessionId,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<Option<Session>>> + Send + '_>>
+        {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn list_sessions(
+            &self,
+        ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<Vec<Session>>> + Send + '_>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    struct AdvisoryRule;
+
+    impl HomeostaticRule for AdvisoryRule {
+        fn rule_id(&self) -> &str {
+            "advisory"
+        }
+
+        fn evaluate(&self, _state: &HomeostaticState) -> Option<GatingDecision> {
+            Some(GatingDecision {
+                advisory_events: vec![AutonomicEvent::RollbackRequested {
+                    artifact: "knowledge_thresholds".into(),
+                    rollback_to: "v1".into(),
+                    reason: "regression".into(),
+                }],
+                rationale: "emit advisory".into(),
+                ..GatingDecision::noop(self.rule_id())
+            })
+        }
     }
 
     // --- Health endpoint (always unprotected) ---
@@ -344,6 +506,134 @@ mod tests {
 
         let json = body_json(resp).await;
         assert_eq!(json["session_id"], "test-session");
+    }
+
+    #[tokio::test]
+    async fn gating_returns_fresh_watermark_after_advisory_publish() {
+        let journal = MockJournal::success(42);
+        let mut rules = RuleSet::new();
+        rules.add(Box::new(AdvisoryRule));
+        let projections = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        {
+            let mut state = HomeostaticState::for_agent("sess-rollback");
+            state.cognitive.knowledge_promotion.active_version = Some("v2".into());
+            state.cognitive.knowledge_promotion.rollback_target = Some("v1".into());
+            projections
+                .write()
+                .await
+                .insert("sess-rollback".into(), state);
+        }
+        let state = AppState::with_journal(projections.clone(), rules, journal.clone());
+        let app = build_router_with_auth(state, AuthConfig::disabled());
+
+        let req = Request::builder()
+            .uri("/gating/sess-rollback")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["last_event_seq"], 42);
+        assert!(json["last_event_ms"].as_u64().unwrap() > 0);
+        assert_eq!(journal.appended.lock().unwrap().len(), 1);
+
+        let projected = projections.read().await;
+        assert!(
+            projected
+                .get("sess-rollback")
+                .unwrap()
+                .cognitive
+                .knowledge_promotion
+                .rollback_requested
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_advisory_events_updates_projection_on_success() {
+        let journal = MockJournal::success(7);
+        let projections = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        {
+            let mut state = HomeostaticState::for_agent("sess-1");
+            state.cognitive.knowledge_promotion.active_version = Some("v2".into());
+            state.cognitive.knowledge_promotion.rollback_target = Some("v1".into());
+            projections.write().await.insert("sess-1".into(), state);
+        }
+        let state = AppState::with_journal(projections.clone(), RuleSet::new(), journal.clone());
+
+        let watermark = publish_advisory_events(
+            &state,
+            "sess-1",
+            vec![AutonomicEvent::RollbackRequested {
+                artifact: "knowledge_thresholds".into(),
+                rollback_to: "v1".into(),
+                reason: "regression".into(),
+            }],
+        )
+        .await
+        .expect("publish should return watermark");
+
+        assert_eq!(watermark.0, 7);
+        assert!(watermark.1 > 0);
+        assert_eq!(journal.appended.lock().unwrap().len(), 1);
+        let projected = projections.read().await;
+        let promotion = &projected
+            .get("sess-1")
+            .unwrap()
+            .cognitive
+            .knowledge_promotion;
+        assert!(promotion.rollback_requested);
+        assert_eq!(promotion.rollback_target.as_deref(), Some("v1"));
+    }
+
+    #[tokio::test]
+    async fn publish_advisory_events_leaves_projection_unchanged_on_failure() {
+        let journal = MockJournal::failure("disk unavailable");
+        let projections = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        {
+            let mut state = HomeostaticState::for_agent("sess-1");
+            state.last_event_seq = 5;
+            state.cognitive.knowledge_promotion.active_version = Some("v2".into());
+            state.cognitive.knowledge_promotion.rollback_target = Some("v1".into());
+            projections.write().await.insert("sess-1".into(), state);
+        }
+        let state = AppState::with_journal(projections.clone(), RuleSet::new(), journal.clone());
+
+        let watermark = publish_advisory_events(
+            &state,
+            "sess-1",
+            vec![AutonomicEvent::RollbackRequested {
+                artifact: "knowledge_thresholds".into(),
+                rollback_to: "v1".into(),
+                reason: "regression".into(),
+            }],
+        )
+        .await;
+
+        assert!(watermark.is_none());
+        assert!(journal.appended.lock().unwrap().is_empty());
+        let projected = projections.read().await;
+        let session = projected.get("sess-1").unwrap();
+        assert_eq!(session.last_event_seq, 5);
+        assert!(!session.cognitive.knowledge_promotion.rollback_requested);
+    }
+
+    #[tokio::test]
+    async fn publish_advisory_events_noops_without_journal() {
+        let state = test_state();
+        let watermark = publish_advisory_events(
+            &state,
+            "sess-1",
+            vec![AutonomicEvent::RollbackRequested {
+                artifact: "knowledge_thresholds".into(),
+                rollback_to: "v1".into(),
+                reason: "regression".into(),
+            }],
+        )
+        .await;
+
+        assert!(watermark.is_none());
+        assert!(state.projections.read().await.is_empty());
     }
 
     // --- Projection endpoint: auth enabled ---
