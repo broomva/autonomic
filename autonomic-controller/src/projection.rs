@@ -74,6 +74,25 @@ pub fn fold(
             state.operational.total_errors += 1;
         }
 
+        // ── Typed knowledge operations ──
+        EventKind::KnowledgeSearched { .. } => {
+            state.cognitive.knowledge_search_count += 1;
+        }
+
+        EventKind::KnowledgeRetrieved { context_tokens, .. } => {
+            state.cognitive.total_tokens_used += u64::from(*context_tokens);
+        }
+
+        EventKind::KnowledgeEvaluated {
+            health_score,
+            note_count,
+            ..
+        } => {
+            state.cognitive.knowledge_health = *health_score;
+            state.cognitive.knowledge_note_count = *note_count;
+            state.cognitive.knowledge_last_indexed_ms = ts_ms;
+        }
+
         // ── Text streaming (token tracking) ──
         EventKind::AssistantMessageCommitted { token_usage, .. }
         | EventKind::Message { token_usage, .. } => {
@@ -1237,6 +1256,47 @@ mod tests {
         let new_state = fold(state, &kind, 1, 5000);
         assert_eq!(new_state.cognitive.knowledge_note_count, 0);
         assert_eq!(new_state.cognitive.knowledge_search_count, 0);
+    }
+
+    #[test]
+    fn fold_typed_knowledge_searched_increments_count() {
+        let state = default_state();
+        let kind = EventKind::KnowledgeSearched {
+            query: "temporal validity".into(),
+            result_count: 3,
+            top_relevance: 5.2,
+            duration_ms: 18,
+        };
+        let new_state = fold(state, &kind, 1, 6000);
+        assert_eq!(new_state.cognitive.knowledge_search_count, 1);
+    }
+
+    #[test]
+    fn fold_typed_knowledge_retrieved_counts_context_tokens() {
+        let state = default_state();
+        let kind = EventKind::KnowledgeRetrieved {
+            note_count: 3,
+            context_tokens: 44,
+            source: "tool_search".into(),
+        };
+        let new_state = fold(state, &kind, 1, 6100);
+        assert_eq!(new_state.cognitive.total_tokens_used, 44);
+    }
+
+    #[test]
+    fn fold_typed_knowledge_evaluated_updates_health_and_count() {
+        let state = default_state();
+        let kind = EventKind::KnowledgeEvaluated {
+            health_score: 0.82,
+            note_count: 64,
+            contradictions: 1,
+            missing_pages: 2,
+            orphans: 3,
+        };
+        let new_state = fold(state, &kind, 1, 6200);
+        assert_eq!(new_state.cognitive.knowledge_note_count, 64);
+        assert!((new_state.cognitive.knowledge_health - 0.82).abs() < f32::EPSILON);
+        assert_eq!(new_state.cognitive.knowledge_last_indexed_ms, 6200);
     }
 
     #[test]
