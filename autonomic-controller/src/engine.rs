@@ -50,9 +50,11 @@ fn merge_decisions(decisions: &[GatingDecision]) -> AutonomicGatingProfile {
     let mut restrict_expensive = false;
     let mut restrict_side_effects = false;
     let mut min_tool_calls: Option<u32> = None;
+    let mut advisory_events = Vec::new();
 
     for d in decisions {
         rationale.push(d.rationale.clone());
+        advisory_events.extend(d.advisory_events.clone());
 
         if let Some(mode) = d.economic_mode
             && economic_mode_severity(mode) > economic_mode_severity(most_restrictive_mode)
@@ -122,6 +124,7 @@ fn merge_decisions(decisions: &[GatingDecision]) -> AutonomicGatingProfile {
     }
 
     profile.rationale = rationale;
+    profile.advisory_events = advisory_events;
     profile
 }
 
@@ -243,6 +246,27 @@ mod tests {
             profile.operational.require_approval_for_risk,
             RiskLevel::Low
         );
+    }
+
+    #[test]
+    fn advisory_events_propagate_to_profile() {
+        let mut rules = RuleSet::new();
+        rules.add(Box::new(MockRule {
+            id: "rollback".into(),
+            decision: Some(GatingDecision {
+                advisory_events: vec![autonomic_core::AutonomicEvent::RollbackRequested {
+                    artifact: "knowledge_thresholds".into(),
+                    rollback_to: "v1".into(),
+                    reason: "regression".into(),
+                }],
+                rationale: "rollback requested".into(),
+                ..GatingDecision::noop("rollback")
+            }),
+        }));
+
+        let state = HomeostaticState::for_agent("test");
+        let profile = evaluate(&state, &rules);
+        assert_eq!(profile.advisory_events.len(), 1);
     }
 
     #[test]

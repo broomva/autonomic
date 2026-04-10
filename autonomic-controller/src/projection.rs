@@ -88,9 +88,7 @@ pub fn fold(
             note_count,
             ..
         } => {
-            state.cognitive.knowledge_health = *health_score;
-            state.cognitive.knowledge_note_count = *note_count;
-            state.cognitive.knowledge_last_indexed_ms = ts_ms;
+            apply_knowledge_health_score(&mut state, *health_score, Some(*note_count), ts_ms);
         }
 
         // ── Text streaming (token tracking) ──
@@ -130,6 +128,8 @@ pub fn fold(
                 apply_strategy_event(&mut state, event_type, ts_ms);
             } else if event_type.starts_with(EVAL_EVENT_PREFIX) {
                 apply_eval_event(&mut state, event_type, data, ts_ms);
+            } else if event_type == EGRI_KNOWLEDGE_PROMOTED_EVENT_TYPE {
+                apply_knowledge_promotion_event(&mut state, data, ts_ms);
             } else if event_type.starts_with(KNOWLEDGE_EVENT_PREFIX) {
                 apply_knowledge_event(&mut state, event_type, data, ts_ms);
             }
@@ -189,6 +189,9 @@ const EVAL_EVENT_PREFIX: &str = "eval.";
 /// Prefix for knowledge events from lago-knowledge.
 const KNOWLEDGE_EVENT_PREFIX: &str = "knowledge.";
 
+/// EGRI promotion event emitted by the Lago Knowledge promotion pipeline.
+const EGRI_KNOWLEDGE_PROMOTED_EVENT_TYPE: &str = "egri.knowledge.promoted";
+
 /// Apply an Autonomic-specific event to state.
 fn apply_autonomic_event(state: &mut HomeostaticState, event: &AutonomicEvent) {
     match event {
@@ -226,6 +229,17 @@ fn apply_autonomic_event(state: &mut HomeostaticState, event: &AutonomicEvent) {
         }
         AutonomicEvent::GatingDecision { .. } => {
             // Informational — no state mutation needed
+        }
+        AutonomicEvent::RollbackRequested {
+            artifact,
+            rollback_to,
+            ..
+        } => {
+            if artifact == "knowledge_thresholds" {
+                state.cognitive.knowledge_promotion.rollback_requested = true;
+                state.cognitive.knowledge_promotion.rollback_target = Some(rollback_to.clone());
+                state.cognitive.knowledge_promotion.rollback_requested_ms = state.last_event_ms;
+            }
         }
     }
 }
@@ -417,7 +431,7 @@ fn apply_knowledge_event(
     state: &mut HomeostaticState,
     event_type: &str,
     data: &serde_json::Value,
-    _ts_ms: u64,
+    ts_ms: u64,
 ) {
     match event_type {
         "knowledge.indexed" => {
@@ -425,14 +439,87 @@ fn apply_knowledge_event(
                 state.cognitive.knowledge_note_count = count as u32;
             }
             if let Some(health) = data.get("health_score").and_then(|v| v.as_f64()) {
-                state.cognitive.knowledge_health = health as f32;
+                apply_knowledge_health_score(state, health as f32, None, ts_ms);
+            } else {
+                state.cognitive.knowledge_last_indexed_ms = ts_ms;
             }
-            state.cognitive.knowledge_last_indexed_ms = state.last_event_ms;
         }
         "knowledge.searched" => {
             state.cognitive.knowledge_search_count += 1;
         }
         _ => {}
+    }
+}
+
+/// Fold an EGRI knowledge-threshold promotion into cognitive regulation state.
+fn apply_knowledge_promotion_event(
+    state: &mut HomeostaticState,
+    data: &serde_json::Value,
+    ts_ms: u64,
+) {
+    let Some(version) = data.get("version").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+
+    let promotion = &mut state.cognitive.knowledge_promotion;
+    promotion.active_version = Some(version.to_owned());
+    promotion.rollback_target = data
+        .get("rollback_target")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    promotion.trial_id = data
+        .get("trial_id")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    promotion.baseline_score = data
+        .get("baseline_score")
+        .and_then(serde_json::Value::as_f64);
+    promotion.promoted_score = data
+        .get("promoted_score")
+        .and_then(serde_json::Value::as_f64);
+    promotion.health_threshold = data
+        .get("artifact")
+        .and_then(|artifact| artifact.get("health_threshold"))
+        .and_then(serde_json::Value::as_f64)
+        .map(|threshold| threshold as f32);
+    promotion.promoted_at_ms = ts_ms;
+    promotion.regression_evaluations = 0;
+    promotion.last_regression_score = None;
+    promotion.last_regression_ms = 0;
+    promotion.rollback_requested = false;
+    promotion.rollback_requested_ms = 0;
+}
+
+/// Update knowledge health and the post-promotion consecutive regression counter.
+fn apply_knowledge_health_score(
+    state: &mut HomeostaticState,
+    health_score: f32,
+    note_count: Option<u32>,
+    ts_ms: u64,
+) {
+    state.cognitive.knowledge_health = health_score;
+    if let Some(note_count) = note_count {
+        state.cognitive.knowledge_note_count = note_count;
+    }
+    state.cognitive.knowledge_last_indexed_ms = ts_ms;
+
+    let promotion = &mut state.cognitive.knowledge_promotion;
+    let Some(threshold) = promotion.health_threshold else {
+        return;
+    };
+
+    if promotion.active_version.is_none() || promotion.rollback_requested {
+        return;
+    }
+
+    if health_score < threshold {
+        promotion.regression_evaluations = promotion.regression_evaluations.saturating_add(1);
+        promotion.last_regression_score = Some(health_score);
+        promotion.last_regression_ms = ts_ms;
+    } else {
+        promotion.regression_evaluations = 0;
+        promotion.last_regression_score = None;
+        promotion.last_regression_ms = 0;
     }
 }
 
@@ -1297,6 +1384,122 @@ mod tests {
         assert_eq!(new_state.cognitive.knowledge_note_count, 64);
         assert!((new_state.cognitive.knowledge_health - 0.82).abs() < f32::EPSILON);
         assert_eq!(new_state.cognitive.knowledge_last_indexed_ms, 6200);
+    }
+
+    fn knowledge_promotion_event(version: &str, rollback_target: Option<&str>) -> EventKind {
+        knowledge_event(
+            "egri.knowledge.promoted",
+            serde_json::json!({
+                "trial_id": "trial-042",
+                "version": version,
+                "rollback_target": rollback_target,
+                "baseline_score": 0.72,
+                "promoted_score": 0.85,
+                "parameters_changed": ["health_threshold"],
+                "artifact": {
+                    "health_threshold": 0.70
+                }
+            }),
+        )
+    }
+
+    #[test]
+    fn fold_egri_knowledge_promotion_tracks_active_version() {
+        let state = default_state();
+        let kind = knowledge_promotion_event("v2", Some("v1"));
+        let new_state = fold(state, &kind, 1, 6300);
+        let promotion = &new_state.cognitive.knowledge_promotion;
+
+        assert_eq!(promotion.active_version.as_deref(), Some("v2"));
+        assert_eq!(promotion.rollback_target.as_deref(), Some("v1"));
+        assert_eq!(promotion.trial_id.as_deref(), Some("trial-042"));
+        assert!((promotion.health_threshold.unwrap() - 0.70).abs() < f32::EPSILON);
+        assert_eq!(promotion.promoted_at_ms, 6300);
+    }
+
+    #[test]
+    fn fold_post_promotion_health_regression_counts_consecutively() {
+        let mut state = default_state();
+        state = fold(state, &knowledge_promotion_event("v2", Some("v1")), 1, 6300);
+
+        for i in 0..3 {
+            state = fold(
+                state,
+                &EventKind::KnowledgeEvaluated {
+                    health_score: 0.62,
+                    note_count: 100,
+                    contradictions: 4,
+                    missing_pages: 2,
+                    orphans: 1,
+                },
+                i + 2,
+                6400 + i * 100,
+            );
+        }
+
+        assert_eq!(
+            state.cognitive.knowledge_promotion.regression_evaluations,
+            3
+        );
+        assert_eq!(
+            state.cognitive.knowledge_promotion.last_regression_score,
+            Some(0.62)
+        );
+
+        state = fold(
+            state,
+            &EventKind::KnowledgeEvaluated {
+                health_score: 0.72,
+                note_count: 100,
+                contradictions: 0,
+                missing_pages: 0,
+                orphans: 0,
+            },
+            5,
+            7000,
+        );
+
+        assert_eq!(
+            state.cognitive.knowledge_promotion.regression_evaluations,
+            0
+        );
+        assert!(
+            state
+                .cognitive
+                .knowledge_promotion
+                .last_regression_score
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fold_autonomic_rollback_requested_marks_promotion_handled() {
+        let mut state = default_state();
+        state = fold(state, &knowledge_promotion_event("v2", Some("v1")), 1, 6300);
+
+        let event = AutonomicEvent::RollbackRequested {
+            artifact: "knowledge_thresholds".into(),
+            rollback_to: "v1".into(),
+            reason: "post-promotion regression detected".into(),
+        };
+        let new_state = fold(state, &event.into_event_kind(), 2, 7100);
+
+        assert!(new_state.cognitive.knowledge_promotion.rollback_requested);
+        assert_eq!(
+            new_state
+                .cognitive
+                .knowledge_promotion
+                .rollback_target
+                .as_deref(),
+            Some("v1")
+        );
+        assert_eq!(
+            new_state
+                .cognitive
+                .knowledge_promotion
+                .rollback_requested_ms,
+            7100
+        );
     }
 
     #[test]

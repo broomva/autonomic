@@ -35,6 +35,12 @@ pub enum AutonomicEvent {
         rationale: Vec<String>,
         economic_mode: EconomicMode,
     },
+    /// A controller detected sustained regression and requests artifact rollback.
+    RollbackRequested {
+        artifact: String,
+        rollback_to: String,
+        reason: String,
+    },
     /// Credits were deposited (revenue, grant, transfer).
     CreditDeposited {
         amount_micro_credits: i64,
@@ -77,6 +83,18 @@ impl AutonomicEvent {
                     "session_id": session_id,
                     "rationale": rationale,
                     "economic_mode": economic_mode,
+                }),
+            ),
+            Self::RollbackRequested {
+                artifact,
+                rollback_to,
+                reason,
+            } => (
+                "autonomic.RollbackRequested",
+                json!({
+                    "artifact": artifact,
+                    "rollback_to": rollback_to,
+                    "reason": reason,
                 }),
             ),
             Self::CreditDeposited {
@@ -137,6 +155,16 @@ impl AutonomicEvent {
                     session_id,
                     rationale,
                     economic_mode,
+                })
+            }
+            "autonomic.RollbackRequested" => {
+                let artifact = data.get("artifact")?.as_str()?.to_owned();
+                let rollback_to = data.get("rollback_to")?.as_str()?.to_owned();
+                let reason = data.get("reason")?.as_str()?.to_owned();
+                Some(Self::RollbackRequested {
+                    artifact,
+                    rollback_to,
+                    reason,
                 })
             }
             "autonomic.CreditDeposited" => {
@@ -237,6 +265,32 @@ mod tests {
                     amount_micro_credits: 5_000_000,
                     ..
                 }
+            ));
+        } else {
+            panic!("expected Custom");
+        }
+    }
+
+    #[test]
+    fn rollback_requested_roundtrip() {
+        let event = AutonomicEvent::RollbackRequested {
+            artifact: "knowledge_thresholds".into(),
+            rollback_to: "v1".into(),
+            reason: "post-promotion regression detected".into(),
+        };
+        let kind = event.into_event_kind();
+        if let EventKind::Custom { event_type, data } = kind {
+            assert_eq!(event_type, "autonomic.RollbackRequested");
+            assert_eq!(data["artifact"], "knowledge_thresholds");
+            assert_eq!(data["rollback_to"], "v1");
+
+            let parsed = AutonomicEvent::from_custom(&event_type, &data).unwrap();
+            assert!(matches!(
+                parsed,
+                AutonomicEvent::RollbackRequested {
+                    rollback_to,
+                    ..
+                } if rollback_to == "v1"
             ));
         } else {
             panic!("expected Custom");

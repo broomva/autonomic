@@ -22,7 +22,7 @@ pub use cognitive_rules::{ContextPressureRule, TokenExhaustionRule};
 pub use economic_rules::{BudgetExhaustionRule, SpendVelocityRule, SurvivalRule};
 pub use engine::evaluate;
 pub use eval_rules::EvalQualityRule;
-pub use knowledge_rules::KnowledgeHealthRule;
+pub use knowledge_rules::{KnowledgeHealthRule, KnowledgeRegressionRule};
 pub use operational_rules::ErrorStreakRule;
 pub use projection::fold;
 pub use strategy_rules::StrategyRule;

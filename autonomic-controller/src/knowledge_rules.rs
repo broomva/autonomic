@@ -3,6 +3,7 @@
 //! Monitors knowledge graph health and memory pressure, producing
 //! advisory signals when the agent's knowledge is degraded.
 
+use autonomic_core::AutonomicEvent;
 use autonomic_core::gating::HomeostaticState;
 use autonomic_core::rules::{GatingDecision, HomeostaticRule};
 
@@ -91,6 +92,87 @@ impl HomeostaticRule for KnowledgeHealthRule {
                 None
             },
             rationale,
+            ..GatingDecision::noop(self.rule_id())
+        })
+    }
+}
+
+/// Rule that requests rollback after sustained post-promotion knowledge regression.
+///
+/// Promotion remains advisory-first: this rule does not mutate configuration.
+/// Instead it emits an `autonomic.RollbackRequested` advisory event that EGRI
+/// can consume and use to restore the previous artifact version.
+pub struct KnowledgeRegressionRule {
+    /// Number of consecutive below-threshold evaluations required before rollback.
+    pub min_regression_evaluations: u32,
+}
+
+impl KnowledgeRegressionRule {
+    pub fn new(min_regression_evaluations: u32) -> Self {
+        Self {
+            min_regression_evaluations,
+        }
+    }
+}
+
+impl Default for KnowledgeRegressionRule {
+    fn default() -> Self {
+        // Spec B requires rollback only after >3 consecutive regressions.
+        Self::new(4)
+    }
+}
+
+impl HomeostaticRule for KnowledgeRegressionRule {
+    fn rule_id(&self) -> &str {
+        "knowledge_regression"
+    }
+
+    fn evaluate(&self, state: &HomeostaticState) -> Option<GatingDecision> {
+        let promotion = &state.cognitive.knowledge_promotion;
+        let version = promotion.active_version.as_ref()?;
+
+        if promotion.rollback_requested
+            || promotion.regression_evaluations < self.min_regression_evaluations
+        {
+            return None;
+        }
+
+        let rollback_to = match &promotion.rollback_target {
+            Some(target) => target.clone(),
+            None => {
+                return Some(GatingDecision {
+                    rule_id: self.rule_id().into(),
+                    rationale: format!(
+                        "post-promotion regression detected for knowledge thresholds {version}, \
+                         but no rollback target is available"
+                    ),
+                    restrict_side_effects: Some(true),
+                    ..GatingDecision::noop(self.rule_id())
+                });
+            }
+        };
+        let threshold = promotion.health_threshold.unwrap_or(0.70);
+        let score = promotion
+            .last_regression_score
+            .unwrap_or(state.cognitive.knowledge_health);
+        let reason = format!(
+            "post-promotion regression detected: knowledge thresholds {version} had {} \
+             consecutive evaluations below {:.0}% health threshold (latest {:.0}%), \
+             requesting rollback to {rollback_to}",
+            promotion.regression_evaluations,
+            threshold * 100.0,
+            score * 100.0
+        );
+
+        Some(GatingDecision {
+            rule_id: self.rule_id().into(),
+            restrict_side_effects: Some(true),
+            rationale: reason.clone(),
+            advisory_events: vec![AutonomicEvent::RollbackRequested {
+                artifact: "knowledge_thresholds".into(),
+                rollback_to,
+                reason,
+            }],
             ..GatingDecision::noop(self.rule_id())
         })
     }
@@ -244,5 +326,65 @@ mod tests {
         // Just above threshold
         let state = state_with_knowledge(0.95, 100, 51, 0, 1_000, 2_000);
         assert!(rule.evaluate(&state).is_some());
+    }
+
+    fn state_with_promotion(regressions: u32) -> HomeostaticState {
+        let mut state = HomeostaticState::for_agent("test");
+        state.cognitive.knowledge_health = 0.62;
+        state.cognitive.knowledge_note_count = 100;
+        state.cognitive.knowledge_promotion.active_version = Some("v2".into());
+        state.cognitive.knowledge_promotion.rollback_target = Some("v1".into());
+        state.cognitive.knowledge_promotion.health_threshold = Some(0.70);
+        state.cognitive.knowledge_promotion.regression_evaluations = regressions;
+        state.cognitive.knowledge_promotion.last_regression_score = Some(0.62);
+        state
+    }
+
+    #[test]
+    fn regression_rule_does_not_fire_before_promotion() {
+        let rule = KnowledgeRegressionRule::default();
+        let state = HomeostaticState::for_agent("test");
+        assert!(rule.evaluate(&state).is_none());
+    }
+
+    #[test]
+    fn regression_rule_waits_for_sustained_regression() {
+        let rule = KnowledgeRegressionRule::default();
+        let state = state_with_promotion(3);
+        assert!(rule.evaluate(&state).is_none());
+    }
+
+    #[test]
+    fn regression_rule_emits_rollback_request() {
+        let rule = KnowledgeRegressionRule::default();
+        let state = state_with_promotion(4);
+        let decision = rule.evaluate(&state).expect("rule should fire");
+
+        assert!(
+            decision
+                .rationale
+                .contains("post-promotion regression detected")
+        );
+        assert_eq!(decision.restrict_side_effects, Some(true));
+        assert_eq!(decision.advisory_events.len(), 1);
+        match &decision.advisory_events[0] {
+            AutonomicEvent::RollbackRequested {
+                artifact,
+                rollback_to,
+                ..
+            } => {
+                assert_eq!(artifact, "knowledge_thresholds");
+                assert_eq!(rollback_to, "v1");
+            }
+            _ => panic!("expected rollback request"),
+        }
+    }
+
+    #[test]
+    fn regression_rule_is_idempotent_after_rollback_requested() {
+        let rule = KnowledgeRegressionRule::default();
+        let mut state = state_with_promotion(4);
+        state.cognitive.knowledge_promotion.rollback_requested = true;
+        assert!(rule.evaluate(&state).is_none());
     }
 }

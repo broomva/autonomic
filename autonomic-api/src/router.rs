@@ -15,6 +15,7 @@ use serde_json::json;
 use tracing::instrument;
 
 use autonomic_controller::{compute_trust_score, evaluate};
+use autonomic_core::AutonomicEvent;
 use autonomic_core::gating::{AutonomicGatingProfile, HomeostaticState};
 use autonomic_core::trust::TrustScore;
 
@@ -79,6 +80,7 @@ async fn get_gating(
     let homeostatic_state = get_or_bootstrap(&state, &session_id).await;
 
     let profile = evaluate(&homeostatic_state, &state.rules);
+    publish_advisory_events(&state, &session_id, profile.advisory_events.clone()).await;
 
     Ok(Json(GatingResponse {
         session_id,
@@ -171,6 +173,37 @@ async fn get_or_bootstrap(state: &AppState, session_id: &str) -> HomeostaticStat
     }
 
     HomeostaticState::for_agent(session_id)
+}
+
+async fn publish_advisory_events(state: &AppState, session_id: &str, events: Vec<AutonomicEvent>) {
+    if events.is_empty() {
+        return;
+    }
+
+    let Some(journal) = &state.journal else {
+        return;
+    };
+
+    for event in events {
+        let payload = event.clone().into_event_kind();
+        match autonomic_lago::publish_event(journal.clone(), session_id, "main", event).await {
+            Ok(seq) => {
+                let ts_ms = lago_core::event::EventEnvelope::now_micros() / 1_000;
+                let mut projections = state.projections.write().await;
+                let projected = projections
+                    .entry(session_id.to_owned())
+                    .or_insert_with(|| HomeostaticState::for_agent(session_id));
+                *projected = autonomic_controller::fold(projected.clone(), &payload, seq, ts_ms);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %error,
+                    "failed to publish Autonomic advisory event"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

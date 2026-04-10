@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::economic::{EconomicMode, ModelTier};
+use crate::events::AutonomicEvent;
 use crate::gating::HomeostaticState;
 
 /// A decision produced by a homeostatic rule.
@@ -28,6 +29,8 @@ pub struct GatingDecision {
     pub max_tool_calls_per_tick: Option<u32>,
     /// Human-readable rationale.
     pub rationale: String,
+    /// Advisory events that a controller may persist after evaluation.
+    pub advisory_events: Vec<AutonomicEvent>,
 }
 
 impl GatingDecision {
@@ -42,6 +45,7 @@ impl GatingDecision {
             restrict_side_effects: None,
             max_tool_calls_per_tick: None,
             rationale: String::new(),
+            advisory_events: Vec::new(),
         }
     }
 }

@@ -13,7 +13,7 @@ use anyhow::Result;
 use autonomic_api::{AppState, AuthConfig, build_router_with_auth};
 use autonomic_controller::{
     BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, KnowledgeHealthRule,
-    SpendVelocityRule, StrategyRule, SurvivalRule, TokenExhaustionRule,
+    KnowledgeRegressionRule, SpendVelocityRule, StrategyRule, SurvivalRule, TokenExhaustionRule,
 };
 use autonomic_core::rules::RuleSet;
 use clap::Parser;
@@ -57,6 +57,7 @@ fn build_rule_set(config: &AutonomicConfig) -> RuleSet {
 
     // Knowledge & memory regulation
     rules.add(Box::new(KnowledgeHealthRule::default()));
+    rules.add(Box::new(KnowledgeRegressionRule::default()));
 
     rules
 }

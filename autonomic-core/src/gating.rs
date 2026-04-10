@@ -8,6 +8,7 @@ use aios_protocol::mode::{GatingProfile, OperatingMode};
 use serde::{Deserialize, Serialize};
 
 use crate::economic::{EconomicMode, EconomicState, ModelTier};
+use crate::events::AutonomicEvent;
 use crate::hysteresis::HysteresisGate;
 
 /// Economic gates — extensions to the canonical `GatingProfile`.
@@ -49,6 +50,9 @@ pub struct AutonomicGatingProfile {
     pub economic: EconomicGates,
     /// Human-readable rationale for why this profile was chosen.
     pub rationale: Vec<String>,
+    /// Advisory events that should be persisted if a controller has a journal.
+    #[serde(default)]
+    pub advisory_events: Vec<AutonomicEvent>,
 }
 
 /// Operational health state — derived from `AgentStateVector` events.
@@ -112,6 +116,9 @@ pub struct CognitiveState {
     pub knowledge_search_count: u32,
     /// Timestamp of last knowledge index build (ms since epoch).
     pub knowledge_last_indexed_ms: u64,
+    /// Active EGRI knowledge promotion and post-promotion regression counters.
+    #[serde(default)]
+    pub knowledge_promotion: KnowledgePromotionState,
 }
 
 impl Default for CognitiveState {
@@ -134,8 +141,42 @@ impl Default for CognitiveState {
             knowledge_note_count: 0,
             knowledge_search_count: 0,
             knowledge_last_indexed_ms: 0,
+            knowledge_promotion: KnowledgePromotionState::default(),
         }
     }
+}
+
+/// Active EGRI knowledge-threshold promotion state.
+///
+/// Populated from `egri.knowledge.promoted` and used by Autonomic to detect
+/// sustained post-promotion knowledge-health regressions before requesting
+/// rollback.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KnowledgePromotionState {
+    /// Active promoted artifact version, e.g. `v2`.
+    pub active_version: Option<String>,
+    /// Previous artifact version that can be restored.
+    pub rollback_target: Option<String>,
+    /// Trial that produced the active promotion.
+    pub trial_id: Option<String>,
+    /// Baseline score before promotion.
+    pub baseline_score: Option<f64>,
+    /// Score that justified promotion.
+    pub promoted_score: Option<f64>,
+    /// Promoted health threshold for post-promotion monitoring.
+    pub health_threshold: Option<f32>,
+    /// Timestamp when the promotion event was folded.
+    pub promoted_at_ms: u64,
+    /// Consecutive knowledge-health evaluations below the promoted threshold.
+    pub regression_evaluations: u32,
+    /// Most recent regressed health score.
+    pub last_regression_score: Option<f32>,
+    /// Timestamp of the most recent regression.
+    pub last_regression_ms: u64,
+    /// Whether Autonomic has already requested rollback for this promotion.
+    pub rollback_requested: bool,
+    /// Timestamp of the rollback request event, if one has been folded.
+    pub rollback_requested_ms: u64,
 }
 
 /// Strategy event tracking state.
@@ -283,6 +324,7 @@ mod tests {
                 allow_replication: false,
             },
             rationale: vec!["balance low".into(), "reducing spend".into()],
+            advisory_events: Vec::new(),
         };
         let json = serde_json::to_string(&profile).unwrap();
         let back: AutonomicGatingProfile = serde_json::from_str(&json).unwrap();
@@ -366,6 +408,45 @@ mod tests {
         let state = HomeostaticState::for_agent("test");
         assert_eq!(state.eval.inline_eval_count, 0);
         assert!((state.eval.aggregate_quality_score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn knowledge_promotion_state_defaults_to_inactive() {
+        let state = HomeostaticState::for_agent("test");
+        assert!(state.cognitive.knowledge_promotion.active_version.is_none());
+        assert_eq!(
+            state.cognitive.knowledge_promotion.regression_evaluations,
+            0
+        );
+        assert!(!state.cognitive.knowledge_promotion.rollback_requested);
+    }
+
+    #[test]
+    fn cognitive_state_serde_defaults_missing_knowledge_promotion() {
+        let json = r#"{
+            "total_tokens_used": 0,
+            "tokens_remaining": 120000,
+            "context_pressure": 0.0,
+            "turns_completed": 0,
+            "tool_density": 0.0,
+            "turns_since_compact": 0,
+            "dilation_gate": {
+                "threshold_enter": 0.6,
+                "threshold_exit": 0.45,
+                "min_hold_ms": 0,
+                "active": false,
+                "last_transition_ms": 0
+            },
+            "observation_count": 0,
+            "memory_commit_count": 0,
+            "compaction_count": 0,
+            "knowledge_health": 1.0,
+            "knowledge_note_count": 0,
+            "knowledge_search_count": 0,
+            "knowledge_last_indexed_ms": 0
+        }"#;
+        let cog: CognitiveState = serde_json::from_str(json).unwrap();
+        assert!(cog.knowledge_promotion.active_version.is_none());
     }
 
     #[test]
