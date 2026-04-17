@@ -2,7 +2,7 @@
 //!
 //! This module is the Rust-native F2 instrumentation for the Recursive
 //! Controlled Systems (RCS) paper. It mirrors the formal definition in
-//! `research/rcs/latex/rcs-definitions.tex` (Theorem 1): a level is
+//! `research/rcs/papers/p0-foundations/main.tex` (Theorem 1): a level is
 //! individually stable iff its stability margin
 //!
 //! ```text
@@ -30,11 +30,12 @@ use serde::Deserialize;
 
 use crate::gating::HomeostaticState;
 
-/// Canonical parameters.toml mirrored from `research/rcs/latex/parameters.toml`.
+/// Canonical parameters.toml mirrored from `research/rcs/data/parameters.toml`.
 ///
 /// Embedded at compile time — editing the mirror is the single source of
-/// truth for Rust. The paper repo's `parameters.toml` is the single source of
-/// truth for the paper; a sync script keeps them aligned.
+/// truth for Rust. The paper repo's `data/parameters.toml` is the single
+/// source of truth for the paper; `scripts/sync-rcs-parameters.sh` keeps
+/// the two aligned.
 const CANONICAL_PARAMETERS_TOML: &str = include_str!("../data/rcs-parameters.toml");
 
 /// Cached parsed canonical parameters.
@@ -83,7 +84,7 @@ struct CanonicalLevel {
 /// Stability budget at a single level of the RCS hierarchy.
 ///
 /// Fields correspond one-to-one with the symbols in the paper's Theorem 1.
-/// See `research/rcs/latex/rcs-definitions.tex` for the full derivation.
+/// See `research/rcs/papers/p0-foundations/main.tex` for the full derivation.
 ///
 /// Construct either directly (fields are public) or via
 /// [`StabilityBudget::from_canonical`] to pull the paper's values.

@@ -10,9 +10,10 @@
 #
 #
 # Single source of truth for the recursive stability budget parameters used by
-# the paper (latex/rcs-definitions*.tex) and the proof tests (tests/*.py).
-# The future Life integration harness (core/life/crates/.../rcs_budget.rs)
-# will also deserialize this file via serde.
+# the paper (papers/p0-foundations/main*.tex via latex/parameters.tex),
+# the Python proof tests (tests/*.py), and the Rust Life harness
+# (core/life/crates/autonomic/autonomic-core/src/rcs_budget.rs via its
+# mirror at core/life/.../data/rcs-parameters.toml).
 #
 # The stability budget at each level is:
 #
@@ -24,7 +25,7 @@
 #
 # A level is individually stable iff lambda_i > 0. The composite multi-level
 # system is exponentially stable when lambda_i > 0 at every level (Theorem 1,
-# rcs-definitions.tex).
+# papers/p0-foundations/main.tex).
 #
 # Editing rules:
 #   - Bump the schema_version below when adding/removing fields.
