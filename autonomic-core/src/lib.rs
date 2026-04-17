@@ -11,6 +11,7 @@ pub mod events;
 pub mod gating;
 pub mod hysteresis;
 pub mod identity;
+pub mod rcs_budget;
 pub mod rules;
 pub mod trust;
 
@@ -25,5 +26,6 @@ pub use gating::{
 };
 pub use hysteresis::HysteresisGate;
 pub use identity::EconomicIdentity;
+pub use rcs_budget::{MarginEstimator, StabilityBudget};
 pub use rules::{GatingDecision, HomeostaticRule, RuleSet};
 pub use trust::{TrustScore, TrustTier, TrustTrajectory};

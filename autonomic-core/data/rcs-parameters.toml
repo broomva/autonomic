@@ -1,0 +1,161 @@
+# =============================================================================
+# RCS — Canonical Parameters (MIRROR)
+# =============================================================================
+#
+# THIS FILE IS A MIRROR. The authoritative source lives in the paper repo at:
+#   ~/broomva/research/rcs/latex/parameters.toml
+# Keep the two in sync via `scripts/sync-rcs-parameters.sh` (or manual copy).
+# The mirror is required because the paper repo is a separate git root and
+# this crate needs compile-time access via `include_str!`.
+#
+#
+# Single source of truth for the recursive stability budget parameters used by
+# the paper (latex/rcs-definitions*.tex) and the proof tests (tests/*.py).
+# The future Life integration harness (core/life/crates/.../rcs_budget.rs)
+# will also deserialize this file via serde.
+#
+# The stability budget at each level is:
+#
+#     lambda_i = gamma_i
+#              - L_theta_i * rho_i        (adaptation cost)
+#              - L_d_i * eta_i            (design evolution cost)
+#              - beta_i * tau_bar_i       (delay cost)
+#              - ln(nu_i) / tau_a_i       (switching cost)
+#
+# A level is individually stable iff lambda_i > 0. The composite multi-level
+# system is exponentially stable when lambda_i > 0 at every level (Theorem 1,
+# rcs-definitions.tex).
+#
+# Editing rules:
+#   - Bump the schema_version below when adding/removing fields.
+#   - Do NOT edit latex/parameters.tex by hand; it is regenerated from this
+#     file by scripts/gen_parameters_tex.py and CI will fail if they diverge.
+#   - The headline lambda_i values (see [derived]) are informational cache for
+#     readers; the generator recomputes and verifies them.
+
+schema_version = 1
+
+# -----------------------------------------------------------------------------
+# Life Agent OS — 4-level hierarchy (L0 plant, L1 autonomic, L2 EGRI, L3 governance)
+# -----------------------------------------------------------------------------
+#
+# Time-scale separation: each level ~10x slower than the one below.
+#   L0: sub-second (tool execution, streaming)
+#   L1: seconds (hysteresis gates, mode transitions)
+#   L2: hours (EGRI mutation trials, promotions)
+#   L3: days (governance policy changes)
+#
+# Source: derived from Life runtime defaults (core/life/crates/autonomic/
+# autonomic-core/src/gating.rs for L1, core/autoany/autoany-core/src/
+# loop_engine.rs for L2) plus paper-specified time scales for L0 and L3.
+# The Life integration harness (F2) will validate these against real traces.
+
+[[levels]]
+id             = "L0"
+name           = "plant"
+system         = "Arcan agent loop (shell.rs)"
+gamma          = 2.0         # nominal decay rate (fast inner loop)
+L_theta        = 0.3         # adaptation sensitivity
+rho            = 0.5         # adaptation rate bound
+L_d            = 0.1         # design sensitivity
+eta            = 0.2         # design evolution rate bound
+beta           = 1.0         # delay sensitivity
+tau_bar        = 0.01        # supremal delay (seconds)
+nu             = 1.2         # jump comparability factor (>= 1)
+tau_a          = 0.5         # average dwell time (seconds)
+display_digits = 3           # paper shows 1.455 -> 3 digits after decimal point
+
+[[levels]]
+id             = "L1"
+name           = "autonomic"
+system         = "Autonomic (engine.rs, HysteresisGate)"
+gamma          = 0.5
+L_theta        = 0.2
+rho            = 0.1
+L_d            = 0.1
+eta            = 0.05
+beta           = 0.5
+tau_bar        = 0.1         # seconds
+nu             = 1.5
+tau_a          = 30.0        # 30s dwell (economic HysteresisGate default)
+display_digits = 3           # paper shows 0.411
+
+[[levels]]
+id             = "L2"
+name           = "EGRI"
+system         = "EGRI (loop_engine.rs)"
+gamma          = 0.1
+L_theta        = 0.05
+rho            = 0.01
+L_d            = 0.02
+eta            = 0.01
+beta           = 0.0005      # small: delay is expected at this scale
+tau_bar        = 60.0        # seconds (minute-scale EGRI trial duration)
+nu             = 1.1
+tau_a          = 3600.0      # hours between promotions
+display_digits = 3           # paper shows 0.069
+
+[[levels]]
+id             = "L3"
+name           = "governance"
+system         = "CLAUDE.md + AGENTS.md + policy.yaml"
+gamma          = 0.01
+L_theta        = 0.001
+rho            = 0.001
+L_d            = 0.001
+eta            = 0.0005
+beta           = 0.000001    # approximately 0: delay is the norm at day scale
+tau_bar        = 3600.0      # seconds (hour-scale review latency)
+nu             = 1.05
+tau_a          = 86400.0     # days between policy changes
+display_digits = 4           # paper shows 0.0064 -> 4 digits for the tiny margin
+
+# -----------------------------------------------------------------------------
+# Eslami & Yu (2026) reproduction parameters — faithful citation, DO NOT EDIT
+# -----------------------------------------------------------------------------
+# These are the stable and unstable cases from Section V of
+# arXiv:2603.10779. The paper tests them verbatim to verify our
+# StabilityBudget class reproduces the cited results.
+
+[eslami_2026.stable]
+description = "Stable parameters from Eslami & Yu (2026), Section V"
+gamma       = 0.609
+L_theta     = 0.8
+rho         = 0.15
+L_d         = 0.0        # no design evolution in their example
+eta         = 0.0
+beta        = 2.5
+tau_bar     = 0.03
+nu          = 2.2
+tau_a       = 4.0
+expected_lambda = 0.217
+
+[eslami_2026.unstable]
+description = "Unstable parameters from Eslami & Yu (2026), Section V"
+gamma       = 0.609
+L_theta     = 0.8
+rho         = 3.5
+L_d         = 0.0
+eta         = 0.0
+beta        = 2.5
+tau_bar     = 0.20
+nu          = 2.2
+tau_a       = 0.4
+expected_lambda = -4.662
+
+# -----------------------------------------------------------------------------
+# Derived values — cached for human readers, verified by the generator
+# -----------------------------------------------------------------------------
+# Do NOT edit these by hand. scripts/gen_parameters_tex.py recomputes them
+# from the [[levels]] entries and fails loudly if the cached values drift.
+
+[derived.lambda]
+L0 = 1.455357   # gamma - L_theta*rho - L_d*eta - beta*tau_bar - ln(nu)/tau_a
+L1 = 0.411484
+L2 = 0.069274
+L3 = 0.006398   # rounds to 0.0064 in paper, 0.006 in CLAUDE.md
+
+[derived.omega]
+# Composite stability rate omega = min_i lambda_i
+value = 0.006398
+level = "L3"
