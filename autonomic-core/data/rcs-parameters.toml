@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # THIS FILE IS A MIRROR. The authoritative source lives in the paper repo at:
-#   ~/broomva/research/rcs/latex/parameters.toml
+#   ~/broomva/research/rcs/data/parameters.toml
 # Keep the two in sync via `scripts/sync-rcs-parameters.sh` (or manual copy).
 # The mirror is required because the paper repo is a separate git root and
 # this crate needs compile-time access via `include_str!`.
