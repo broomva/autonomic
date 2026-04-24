@@ -8,10 +8,16 @@ repository.workspace = true
 homepage.workspace = true
 description = "Homeostasis controller facade for the Life Agent OS — re-exports autonomic-core, autonomic-controller, and autonomic-api"
 
+[features]
+default = ["runtime"]
+runtime = []
+schema = ["dep:autonomic-api-schema"]
+
 [dependencies]
 autonomic-core = { path = "../autonomic-core", version = "0.3.0" }
 autonomic-controller = { path = "../autonomic-controller", version = "0.3.0" }
 autonomic-api = { path = "../autonomic-api", version = "0.3.0" }
+autonomic-api-schema = { workspace = true, optional = true }
 
 [lints]
 workspace = true
