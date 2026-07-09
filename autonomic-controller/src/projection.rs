@@ -55,11 +55,7 @@ pub fn fold(
         }
 
         // ── Tool lifecycle ──
-        EventKind::ToolCallCompleted {
-            status,
-            duration_ms: _,
-            ..
-        } => {
+        EventKind::ToolCallCompleted { status, .. } => {
             if *status == SpanStatus::Ok {
                 state.operational.total_successes += 1;
                 state.operational.error_streak = 0;
